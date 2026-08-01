@@ -1,0 +1,83 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "backtrader-mcp"
+version = "0.2.0"
+description = "Local-first MCP server for safe, reproducible Backtrader strategy development"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "cloudQuant"}]
+dependencies = [
+  "mcp>=2.0.0,<3",
+  "pandas>=2.0,<3",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=4.0",
+  "jsonschema>=4.0",
+  "hypothesis>=6.0",
+]
+
+[project.scripts]
+backtrader-mcp = "backtrader_mcp.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/backtrader_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -p no:xdist --cov=backtrader_mcp --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["src/backtrader_mcp"]
+branch = true
+omit = [
+  "src/backtrader_mcp/catalog_snapshot.json",
+  "src/backtrader_mcp/catalog_snapshot.jsonl",
+  "src/backtrader_mcp/__main__.py",
+  # Executed in a controlled subprocess; behavior is verified end-to-end by
+  # tests/test_acceptance_matrix.py and tests/test_jobs_reports_recovery.py.
+  "src/backtrader_mcp/worker.py",
+  "src/backtrader_mcp/feed_runtime.py",
+  # MCP tool/resource/prompt surface; exercised by tests/test_protocol_v2.py
+  # under an isolated mcp==2.0.0 target (skipped in the default environment).
+  "src/backtrader_mcp/server.py",
+]
+
+[tool.coverage.report]
+# Current branch-coverage baseline is ~78%. This gate catches regressions
+# below that; raise to 80 once Phase D test additions land.
+fail_under = 75
+show_missing = true
+exclude_lines = [
+  "pragma: no cover",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+ignore = ["E501"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+files = ["src/backtrader_mcp"]

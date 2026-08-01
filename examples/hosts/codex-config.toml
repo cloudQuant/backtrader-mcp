@@ -1,0 +1,19 @@
+[mcp_servers.backtrader]
+command = "/ABSOLUTE/PATH/backtrader-mcp/.runtime/bin/backtrader-mcp"
+args = ["serve"]
+startup_timeout_sec = 20
+# Keep tool_timeout_sec >= BACKTRADER_MCP_MAX_RUN_SECONDS plus a buffer, or the
+# host kills the tool while the product thinks the job is still running.
+tool_timeout_sec = 300
+required = true
+
+[mcp_servers.backtrader.env]
+BACKTRADER_MCP_STATE_ROOT = "/ABSOLUTE/PATH/.backtrader-mcp-state"
+BACKTRADER_MCP_SOURCE_ROOTS = "{\"market_data\":\"/ABSOLUTE/PATH/data\"}"
+BACKTRADER_MCP_TARGET_ROOTS = "{\"strategies\":\"/ABSOLUTE/PATH/generated-strategies\"}"
+BACKTRADER_MCP_RUNTIMES = "{\"default\":\"/ABSOLUTE/PATH/backtrader-source\"}"
+# Optional tuning (defaults shown). Uncomment and adjust as needed.
+# BACKTRADER_MCP_MAX_RUN_SECONDS = "300"
+# BACKTRADER_MCP_MAX_CONCURRENT_JOBS = "4"
+# BACKTRADER_MCP_MAX_RUN_MEMORY_BYTES = "2147483648"
+# BACKTRADER_MCP_LOG_LEVEL = "WARNING"

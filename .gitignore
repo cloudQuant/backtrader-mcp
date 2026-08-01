@@ -156,6 +156,8 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+# Dedicated runtime venv created by the install instructions
+.runtime/
 
 # Spyder project settings
 .spyderproject

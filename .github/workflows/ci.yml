@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff and black
+        run: python -m pip install "ruff>=0.6" "black>=24.0"
+      - name: Ruff check
+        run: ruff check src tests scripts
+      - name: Black format check
+        run: black --check --line-length 100 src tests scripts
+
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c constraints/requirements-v2.txt ".[test]"
+      - name: Run tests with coverage
+        run: PYTHONPATH=src python -m pytest -q -p no:xdist
+      - name: Independence audit
+        run: PYTHONPATH=src python -m backtrader_mcp audit-independence
+
+  typing:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install mypy and package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c constraints/requirements-v2.txt ".[test]" mypy
+      - name: Mypy
+        run: PYTHONPATH=src python -m mypy src/backtrader_mcp
