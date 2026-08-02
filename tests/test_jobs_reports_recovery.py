@@ -29,7 +29,7 @@ def _wait(service, job_id: str, timeout: float = 20.0):
     raise AssertionError(f"job {job_id} did not become terminal")
 
 
-def test_candidate_environment_enables_cloudquant_light_import():
+def test_candidate_environment_enables_cloudquant_light_import_and_thread_caps():
     environment = worker._candidate_environment(
         runtime_root="/trusted-backtrader",
         package_src="/trusted-mcp",
@@ -41,6 +41,24 @@ def test_candidate_environment_enables_cloudquant_light_import():
     )
 
     assert environment["BACKTRADER_LIGHT_IMPORT"] == "1"
+    assert {
+        name: environment[name]
+        for name in (
+            "OPENBLAS_NUM_THREADS",
+            "OMP_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "NUMEXPR_NUM_THREADS",
+            "VECLIB_MAXIMUM_THREADS",
+            "BLIS_NUM_THREADS",
+        )
+    } == {
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "NUMEXPR_NUM_THREADS": "1",
+        "VECLIB_MAXIMUM_THREADS": "1",
+        "BLIS_NUM_THREADS": "1",
+    }
 
 
 @pytest.mark.parametrize("archetype", sorted(ARCHETYPES))

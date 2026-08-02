@@ -23,6 +23,7 @@ test = [
   "pytest-cov>=4.0",
   "jsonschema>=4.0",
   "hypothesis>=6.0",
+  "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.scripts]

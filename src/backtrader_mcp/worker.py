@@ -29,6 +29,19 @@ else:
 
 logger = get_logger("worker")
 
+# Candidate processes are intentionally capped to a small process budget.  Common
+# numerical libraries otherwise try to create a CPU-sized thread pool during
+# import, which both weakens that budget and can make a constrained worker fail
+# before it executes user code.
+_NUMERIC_THREAD_ENVIRONMENT = {
+    "OPENBLAS_NUM_THREADS": "1",
+    "OMP_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+    "VECLIB_MAXIMUM_THREADS": "1",
+    "BLIS_NUM_THREADS": "1",
+}
+
 
 def _apply_resource_limits(limits: dict[str, int]) -> None:
     """Apply candidate subprocess resource caps in the child before exec.
@@ -156,6 +169,7 @@ def _candidate_environment(
             # It excludes optional plotting/analysis integrations from every isolated
             # candidate process without changing the trusted MCP supervisor.
             "BACKTRADER_LIGHT_IMPORT": "1",
+            **_NUMERIC_THREAD_ENVIRONMENT,
             "BACKTRADER_MCP_DATASET": master_dataset_path,
             "BACKTRADER_MCP_DATASETS_JSON": json.dumps(
                 dataset_paths, sort_keys=True, separators=(",", ":")

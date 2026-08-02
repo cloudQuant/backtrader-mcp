@@ -5,7 +5,11 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 uses the supported backport in test extras.
+    import tomli as tomllib
 
 import backtrader_mcp.backtrader_runtime as runtime_policy
 import backtrader_mcp.settings as settings_module
