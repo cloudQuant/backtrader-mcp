@@ -6,9 +6,22 @@ import subprocess
 from pathlib import Path
 
 import backtrader_mcp.doctor as doctor_module
+from backtrader_mcp.backtrader_runtime import inspect_installed_backtrader
 from backtrader_mcp.cli import main
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+def _installed_cloudquant_runtime_root() -> Path:
+    """Return the package root installed from the pinned CloudQuant dependency.
+
+    Doctor CLI tests must not depend on a developer's sibling checkout: the CI
+    environment deliberately exercises an isolated, installed distribution.
+    """
+
+    installed = inspect_installed_backtrader()
+    root = installed["root"]
+    assert installed["trusted"] is True, installed
+    assert isinstance(root, str), installed
+    return Path(root)
 
 
 def _tree_snapshot(root: Path) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]]:
@@ -72,10 +85,12 @@ def _configure_roots(monkeypatch, tmp_path: Path, *, runtimes: dict[str, str]) -
 
 def test_doctor_cli_reports_actual_runtime_without_mutating_state(monkeypatch, tmp_path, capsys):
     _supported_distributions(monkeypatch)
+    installed = inspect_installed_backtrader()
+    runtime_root = _installed_cloudquant_runtime_root()
     state = _configure_roots(
         monkeypatch,
         tmp_path,
-        runtimes={"default": str(REPOSITORY_ROOT / "backtrader")},
+        runtimes={"default": str(runtime_root)},
     )
 
     exit_code = main(["doctor"])
@@ -90,9 +105,9 @@ def test_doctor_cli_reports_actual_runtime_without_mutating_state(monkeypatch, t
     assert report["product"]["dependencies"]["mcp"]["version"] == "2.0.0"
     runtime = report["runtimes"][0]
     assert runtime["runtime_id"] == "default"
-    assert runtime["version"] == "1.3.0"
+    assert runtime["version"] == installed["version"]
     assert runtime["origin_matches_runtime"] is True
-    assert Path(runtime["module_file"]).is_relative_to(REPOSITORY_ROOT / "backtrader")
+    assert Path(runtime["module_file"]).is_relative_to(runtime_root / "backtrader")
     assert runtime["capabilities"] == {
         "cerebro": True,
         "generic_csv": True,
@@ -177,10 +192,11 @@ def test_doctor_cli_does_not_write_any_configured_root_or_runtime(monkeypatch, t
 
 def test_doctor_warns_when_the_active_backtrader_is_not_cloudquant(monkeypatch, tmp_path, capsys):
     _supported_distributions(monkeypatch)
+    runtime_root = _installed_cloudquant_runtime_root()
     _configure_roots(
         monkeypatch,
         tmp_path,
-        runtimes={"default": str(REPOSITORY_ROOT / "backtrader")},
+        runtimes={"default": str(runtime_root)},
     )
     monkeypatch.setattr(
         doctor_module,

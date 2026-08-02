@@ -2,7 +2,7 @@ Backtrader MCP
 Copyright 2026 cloudQuant
 
 This distribution contains the independent Backtrader MCP product under the
-BSD 3-Clause License in LICENSE.
+MIT License in LICENSE.
 
 It does not bundle the Backtrader engine, strategy corpora, Backtrader Skills,
 Backtrader Agent, broker SDKs, market data, or model providers. A separately
