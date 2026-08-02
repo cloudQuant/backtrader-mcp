@@ -7,6 +7,7 @@ import time
 import pytest
 from conftest import canonical_spec
 
+from backtrader_mcp import worker
 from backtrader_mcp.contracts import ARCHETYPES
 from backtrader_mcp.service import BacktraderMCPService
 from backtrader_mcp.util import utc_now
@@ -26,6 +27,20 @@ def _wait(service, job_id: str, timeout: float = 20.0):
             return status
         time.sleep(0.1)
     raise AssertionError(f"job {job_id} did not become terminal")
+
+
+def test_candidate_environment_enables_cloudquant_light_import():
+    environment = worker._candidate_environment(
+        runtime_root="/trusted-backtrader",
+        package_src="/trusted-mcp",
+        master_dataset_path="/dataset/primary.csv",
+        dataset_paths={"primary": "/dataset/primary.csv"},
+        feed_configs=[{"name": "primary"}],
+        result_path="/result.json",
+        mode="runonce",
+    )
+
+    assert environment["BACKTRADER_LIGHT_IMPORT"] == "1"
 
 
 @pytest.mark.parametrize("archetype", sorted(ARCHETYPES))
@@ -80,6 +95,41 @@ def test_distinct_run_approval_fixed_profile_and_report(
     assert "Canonical metrics" in rendered["content"]
     comparison = service.compare_strategy_runs(started["job_id"], started["job_id"])
     assert comparison["status"] == "matched"
+
+
+def test_single_mode_run_uses_frozen_execution_modes(registered_dataset):
+    service, dataset = registered_dataset
+    spec = canonical_spec(dataset["dataset_id"], "single_data_indicator", "python_bundle")
+    spec["run_modes"] = ["runonce"]
+    draft = service.create_strategy_draft(spec)
+    validation = service.validate_strategy_draft(draft["draft_id"], draft["revision"])
+    plan = service.prepare_strategy_run(
+        draft["draft_id"],
+        validation["validation_token"],
+        dataset["dataset_id"],
+        "default",
+        20,
+        "runonce",
+        "prepare-single-mode",
+    )
+    assert plan["frozen_inputs"]["execution_modes"] == ["runonce"]
+    approval = service.jobs.approve_run_plan(plan["run_plan_id"], plan["run_token"])
+    started = service.start_strategy_run(
+        plan["run_plan_id"],
+        plan["run_token"],
+        approval["approval_id"],
+        "start-single-mode",
+    )
+
+    status = _wait(service, started["job_id"])
+
+    assert status["state"] == "SUCCEEDED", status.get("error")
+    job = service.state.get("job", started["job_id"])
+    assert job["execution_modes"] == ["runonce"]
+    assert job["run_manifest"]["run_profile"]["execution_modes"] == ["runonce"]
+    result = service.get_run_result(started["job_id"])
+    assert set(result["extensions"]["mode_results"]) == {"runonce"}
+    assert result["extensions"]["runonce_runnext_comparison"] is None
 
 
 def test_cancel_and_restart_recovery(service_env):

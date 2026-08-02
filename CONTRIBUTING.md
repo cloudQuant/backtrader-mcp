@@ -14,10 +14,15 @@ python -m venv .runtime
 python -m pip install -c constraints/requirements-v2.txt ".[test]"
 ```
 
-The test suite runs real Backtrader backtests in a subprocess. It expects a
-registered runtime root that contains `backtrader/__init__.py`. The shared
-test fixture in `tests/conftest.py` uses the repository parent directory as the
-default runtime root, so a sibling `backtrader` source checkout satisfies it.
+The test suite runs real Backtrader backtests in a subprocess. Its runtime
+resolution order is an explicit `BACKTRADER_MCP_TEST_RUNTIME_ROOT`, a sibling
+`backtrader` source checkout, then the installed package. The project pins
+`cloudQuant/backtrader` at commit `3c967ed61be184c0099ba5bef55d4bed09ad0b4a`;
+every candidate must contain `backtrader/__init__.py` and prove CloudQuant
+provenance through its Git origin or installed direct-URL metadata. An invalid
+or untrusted explicit override fails instead of falling back silently. Run
+`backtrader-mcp install-backtrader` only when Backtrader is absent; an existing
+untrusted distribution is preserved and reported as a warning.
 
 ## Running checks
 
@@ -25,12 +30,13 @@ default runtime root, so a sibling `backtrader` source checkout satisfies it.
 PYTHONPATH=src python -m pytest -q                       # tests + coverage (fails under 80%)
 ruff check src tests scripts                              # lint
 ruff format --check src tests scripts                     # format check
-PYTHONPATH=src python -m mypy src/backtrader_mcp          # types (advisory)
+PYTHONPATH=src python -m mypy src/backtrader_mcp          # required types
 PYTHONPATH=src python -m backtrader_mcp audit-independence
 ```
 
 Acceptance (builds a wheel and runs the structured matrix from outside the
-checkout):
+checkout, installing the wheel's `[test]` dependencies into a temporary
+target):
 
 ```bash
 python scripts/run_acceptance.py --matrix all --require-no-skills --require-no-agent

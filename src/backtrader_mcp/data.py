@@ -270,15 +270,18 @@ class DatasetService:
         feeds = data_spec.get("feeds")
         if not isinstance(feeds, list) or not 1 <= len(feeds) <= 32:
             raise InvalidRequest("DataSpec feeds must contain 1-32 typed feed descriptors")
-        names = [feed.get("name") for feed in feeds if isinstance(feed, dict)]
-        if len(names) != len(feeds) or any(
-            not isinstance(name, str) or not name.isidentifier() for name in names
-        ):
-            raise InvalidRequest("DataSpec feed names must be Python identifiers")
+        names: list[str] = []
+        for feed in feeds:
+            if not isinstance(feed, dict):
+                raise InvalidRequest("DataSpec feed names must be Python identifiers")
+            name = feed.get("name")
+            if not isinstance(name, str) or not name.isidentifier():
+                raise InvalidRequest("DataSpec feed names must be Python identifiers")
+            names.append(name)
         if len(set(names)) != len(names):
             raise InvalidRequest("DataSpec feed names must be unique")
         master_feed = data_spec.get("master_feed")
-        if master_feed not in names:
+        if not isinstance(master_feed, str) or master_feed not in names:
             raise InvalidRequest("DataSpec master_feed must name a declared feed")
         alignment = data_spec.get("alignment")
         if (
@@ -740,6 +743,7 @@ class DatasetService:
             if not isinstance(column, str) or column not in columns:
                 raise InvalidRequest("transform column is invalid")
             values = [float(row[column]) for row in rows]
+            derived: list[str]
             if transform_profile_id == "returns":
                 if set(typed_params) - {"column", "output"}:
                     raise InvalidRequest("returns has unknown parameters")
@@ -774,8 +778,8 @@ class DatasetService:
             ):
                 raise InvalidRequest("transform output must be a new public identifier")
             columns.append(output)
-            for row, value in zip(rows, derived):
-                row[output] = value
+            for row, derived_value in zip(rows, derived):
+                row[output] = derived_value
         else:
             raise InvalidRequest("unknown transform profile")
         content = _encode_rows(columns, rows)

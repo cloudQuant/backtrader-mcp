@@ -11,6 +11,7 @@ if not importlib.metadata.version("mcp").startswith("2."):
 
 from mcp.client import Client
 
+from backtrader_mcp import __version__
 from backtrader_mcp.server import create_server
 from backtrader_mcp.settings import Settings
 
@@ -44,6 +45,7 @@ def test_mcp_v2_typed_surface(tmp_path):
             runtimes={},
         )
         server = create_server(settings)
+        assert server.version == __version__
         async with Client(server) as client:
             tools = await client.list_tools()
             names = {tool.name for tool in tools.tools}

@@ -60,7 +60,7 @@ def _strategy_body(spec: StrategySpec) -> str:
         "multi_indicator_system": """
         self.fast_ma = bt.indicators.SMA(self.data.close, period=self.p.fast)
         self.slow_ma = bt.indicators.SMA(self.data.close, period=self.p.slow)
-        self.rsi = bt.indicators.RSI(self.data.close, period=self.p.rsi_period)
+        self.rsi = bt.indicators.RSI_Safe(self.data.close, period=self.p.rsi_period)
 
     def next(self):
         if not self.position and self.fast_ma[0] > self.slow_ma[0] and self.rsi[0] < 70:

@@ -5,23 +5,27 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-try:
-    import resource
-except ImportError:  # Windows lacks the resource module
-    resource = None
-
 from .errors import InvalidRequest
+from .jobs import RUN_PROFILE_MODES
 from .logging_config import configure_logging, get_logger
+from .process_control import platform_environment, popen_group_options, terminate_popen
 from .reports import compare_metrics, normalize_metrics, render_markdown
 from .state import StateStore
 from .util import atomic_write, file_hash, sha256_json, utc_now
+
+resource_module: Any | None
+try:
+    import resource as _resource_module
+except ImportError:  # Windows lacks the resource module
+    resource_module = None
+else:
+    resource_module = _resource_module
 
 logger = get_logger("worker")
 
@@ -33,43 +37,30 @@ def _apply_resource_limits(limits: dict[str, int]) -> None:
     only, not the trusted supervisor. Best-effort: unsupported limits or values
     a platform rejects are skipped rather than fatal.
     """
-    if resource is None:
+    if resource_module is None:
         return
     spec: list[tuple[int, tuple[int, int]]] = []
     cpu = limits.get("cpu_seconds", 0)
-    if cpu and hasattr(resource, "RLIMIT_CPU"):
-        spec.append((resource.RLIMIT_CPU, (cpu, cpu)))
+    if cpu and hasattr(resource_module, "RLIMIT_CPU"):
+        spec.append((resource_module.RLIMIT_CPU, (cpu, cpu)))
     mem = limits.get("memory_bytes", 0)
-    if mem and hasattr(resource, "RLIMIT_AS"):
-        spec.append((resource.RLIMIT_AS, (mem, mem)))
+    if mem and hasattr(resource_module, "RLIMIT_AS"):
+        spec.append((resource_module.RLIMIT_AS, (mem, mem)))
     fsize = limits.get("file_size_bytes", 0)
-    if fsize and hasattr(resource, "RLIMIT_FSIZE"):
-        spec.append((resource.RLIMIT_FSIZE, (fsize, fsize)))
+    if fsize and hasattr(resource_module, "RLIMIT_FSIZE"):
+        spec.append((resource_module.RLIMIT_FSIZE, (fsize, fsize)))
     nproc = limits.get("processes", 0)
-    if nproc and hasattr(resource, "RLIMIT_NPROC"):
-        spec.append((resource.RLIMIT_NPROC, (nproc, nproc)))
+    if nproc and hasattr(resource_module, "RLIMIT_NPROC"):
+        spec.append((resource_module.RLIMIT_NPROC, (nproc, nproc)))
     for res, (soft, hard) in spec:
         try:
-            resource.setrlimit(res, (soft, hard))
+            resource_module.setrlimit(res, (soft, hard))
         except (ValueError, OSError):
             pass
 
 
 def _update(store: StateStore, job_id: str, **values: Any) -> dict[str, Any]:
     return store.update("job", job_id, lambda current: {**current, **values})
-
-
-def _terminate(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-        process.wait(timeout=2)
-    except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (OSError, ProcessLookupError):
-            pass
 
 
 def _validate_result(value: Any, expected_feed_configs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -143,6 +134,41 @@ def _validate_result(value: Any, expected_feed_configs: list[dict[str, Any]]) ->
     }
 
 
+def _candidate_environment(
+    *,
+    runtime_root: str,
+    package_src: str,
+    master_dataset_path: str,
+    dataset_paths: dict[str, str],
+    feed_configs: list[dict[str, Any]],
+    result_path: str | Path,
+    mode: str,
+) -> dict[str, str]:
+    """Return the deliberately small environment granted to a strategy candidate."""
+
+    return platform_environment(
+        {
+            "PATH": os.environ.get("PATH", ""),
+            "LANG": os.environ.get("LANG", "C.UTF-8"),
+            "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+            "PYTHONPATH": os.pathsep.join([runtime_root, package_src]),
+            # The required CloudQuant runtime supports this core-only import mode.
+            # It excludes optional plotting/analysis integrations from every isolated
+            # candidate process without changing the trusted MCP supervisor.
+            "BACKTRADER_LIGHT_IMPORT": "1",
+            "BACKTRADER_MCP_DATASET": master_dataset_path,
+            "BACKTRADER_MCP_DATASETS_JSON": json.dumps(
+                dataset_paths, sort_keys=True, separators=(",", ":")
+            ),
+            "BACKTRADER_MCP_FEEDS_JSON": json.dumps(
+                feed_configs, sort_keys=True, separators=(",", ":")
+            ),
+            "BACKTRADER_MCP_RESULT": str(result_path),
+            "BACKTRADER_MCP_RUN_MODE": mode,
+        }
+    )
+
+
 def run_worker(state_root: Path, job_id: str) -> int:
     state = StateStore(state_root)
     job = state.get("job", job_id)
@@ -195,13 +221,21 @@ def run_worker(state_root: Path, job_id: str) -> int:
             )
             return 2
     entrypoint = draft_root / job["entrypoint"]
-    profile_modes = {
-        "runonce": ["runonce"],
-        "runnext": ["runnext"],
-        "runonce_runnext_compare": ["runonce", "runnext"],
-        "fixed_tests": ["runonce", "runnext"],
-    }
-    modes = profile_modes[job["run_profile_id"]]
+    expected_modes = list(RUN_PROFILE_MODES.get(job["run_profile_id"], ()))
+    modes = job.get("execution_modes")
+    if (
+        not isinstance(modes, list)
+        or any(mode not in {"runonce", "runnext"} for mode in modes)
+        or modes != expected_modes
+    ):
+        _update(
+            state,
+            job_id,
+            state="FAILED",
+            finished_at=utc_now(),
+            error="job execution modes do not match the frozen run profile",
+        )
+        return 2
     resource_limits = job.get("resource_limits") or {}
     _update(
         state,
@@ -221,21 +255,15 @@ def run_worker(state_root: Path, job_id: str) -> int:
         result_path = job_root / f"result.{mode}.candidate.json"
         stdout_path = job_root / f"candidate.{mode}.stdout.log"
         stderr_path = job_root / f"candidate.{mode}.stderr.log"
-        environment = {
-            "PATH": os.environ.get("PATH", ""),
-            "LANG": os.environ.get("LANG", "C.UTF-8"),
-            "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
-            "PYTHONPATH": os.pathsep.join([job["runtime_root"], package_src]),
-            "BACKTRADER_MCP_DATASET": master_dataset_path,
-            "BACKTRADER_MCP_DATASETS_JSON": json.dumps(
-                dataset_paths, sort_keys=True, separators=(",", ":")
-            ),
-            "BACKTRADER_MCP_FEEDS_JSON": json.dumps(
-                feed_configs, sort_keys=True, separators=(",", ":")
-            ),
-            "BACKTRADER_MCP_RESULT": str(result_path),
-            "BACKTRADER_MCP_RUN_MODE": mode,
-        }
+        environment = _candidate_environment(
+            runtime_root=job["runtime_root"],
+            package_src=package_src,
+            master_dataset_path=master_dataset_path,
+            dataset_paths=dataset_paths,
+            feed_configs=feed_configs,
+            result_path=result_path,
+            mode=mode,
+        )
         with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
             process = subprocess.Popen(
                 [sys.executable, str(entrypoint)],
@@ -244,9 +272,8 @@ def run_worker(state_root: Path, job_id: str) -> int:
                 stdin=subprocess.DEVNULL,
                 stdout=stdout,
                 stderr=stderr,
-                start_new_session=True,
                 close_fds=True,
-                preexec_fn=lambda: _apply_resource_limits(resource_limits),
+                **popen_group_options(preexec_fn=lambda: _apply_resource_limits(resource_limits)),
             )
             _update(
                 state,
@@ -259,7 +286,7 @@ def run_worker(state_root: Path, job_id: str) -> int:
             while process.poll() is None:
                 current = state.get("job", job_id)
                 if current["state"] == "CANCEL_REQUESTED":
-                    _terminate(process)
+                    terminate_popen(process)
                     _update(
                         state,
                         job_id,
@@ -271,7 +298,7 @@ def run_worker(state_root: Path, job_id: str) -> int:
                     return 3
                 now = time.monotonic()
                 if now >= deadline:
-                    _terminate(process)
+                    terminate_popen(process)
                     _update(
                         state,
                         job_id,

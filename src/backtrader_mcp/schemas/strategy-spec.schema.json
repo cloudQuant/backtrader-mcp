@@ -89,6 +89,7 @@
       "required": ["name", "role", "symbol", "timeframe", "lines"],
       "properties": {
         "name": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$"},
+        "dataset_feed": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$"},
         "role": {"enum": ["execution", "signal", "benchmark", "hedge", "cash_proxy"]},
         "symbol": {"type": "string", "minLength": 1},
         "timeframe": {"type": "string", "minLength": 1},

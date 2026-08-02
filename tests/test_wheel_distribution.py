@@ -40,7 +40,8 @@ def test_wheel_contains_contracts_policy_and_legal_files():
         assert len(snapshot.splitlines()) == 1156
         metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
         metadata = archive.read(metadata_name).decode("utf-8")
-        assert "Requires-Dist: mcp<3,>=2.0.0" in metadata
+        assert "Version: 0.2.0" in metadata
+        assert "Requires-Dist: mcp<2.1,>=2.0.0" in metadata
         assert "Requires-Dist: pandas<3,>=2.0" in metadata
         assert any(name.endswith(".dist-info/licenses/LICENSE") for name in names)
         assert any(name.endswith(".dist-info/licenses/NOTICE") for name in names)
@@ -82,8 +83,9 @@ def test_clean_wheel_catalog_import_does_not_need_a_sibling_checkout(tmp_path):
                 "from backtrader_mcp.state import StateStore; "
                 "t=TemporaryDirectory(); s=Settings(state_root=Path(t.name)); "
                 "s.initialize(); c=CatalogService(s, StateStore(s.state_root)); "
-                "print(c.get_snapshot()['extensions']['entry_count'], "
-                "c.list_templates()['count'])"
+                "import backtrader_mcp; "
+                "print(backtrader_mcp.__version__, "
+                "c.get_snapshot()['extensions']['entry_count'], c.list_templates()['count'])"
             ),
         ],
         cwd=run_root,
@@ -93,4 +95,4 @@ def test_clean_wheel_catalog_import_does_not_need_a_sibling_checkout(tmp_path):
         stderr=subprocess.PIPE,
         text=True,
     )
-    assert completed.stdout.strip() == "1155 14"
+    assert completed.stdout.strip() == "0.2.0 1155 14"

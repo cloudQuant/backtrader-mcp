@@ -209,7 +209,9 @@ def _build_source_attached_entries(
             "mapping_status": (
                 "mapped"
                 if canonical_id in mapped
-                else "functional_only" if test_path else "package_only"
+                else "functional_only"
+                if test_path
+                else "package_only"
             ),
             "source_available": True,
             "dependencies": [],
@@ -389,7 +391,9 @@ class CatalogService:
                     (
                         base.id
                         if isinstance(base, ast.Name)
-                        else base.attr if isinstance(base, ast.Attribute) else ""
+                        else base.attr
+                        if isinstance(base, ast.Attribute)
+                        else ""
                     )
                     for base in node.bases
                 }

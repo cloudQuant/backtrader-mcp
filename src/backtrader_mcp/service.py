@@ -6,6 +6,7 @@ import json
 from importlib.resources import files
 from typing import Any
 
+from . import __version__
 from .audit import audit_independence
 from .catalog import CatalogService
 from .changes import ChangeService
@@ -50,8 +51,8 @@ class BacktraderMCPService:
     def product_info(self) -> dict[str, Any]:
         return {
             "name": "backtrader-mcp",
-            "version": "0.2.0",
-            "mcp_sdk": ">=2.0.0,<3",
+            "version": __version__,
+            "mcp_sdk": ">=2.0.0,<2.1",
             "transport": "stdio",
             "tasks_extension": False,
             "job_api": [
@@ -130,7 +131,8 @@ class BacktraderMCPService:
     def get_strategy_contract(self) -> dict[str, Any]:
         schema = json.loads(
             files("backtrader_mcp")
-            .joinpath("schemas", "strategy-spec.schema.json")
+            .joinpath("schemas")
+            .joinpath("strategy-spec.schema.json")
             .read_text(encoding="utf-8")
         )
         return {

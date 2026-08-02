@@ -107,28 +107,29 @@ def compare_metrics(
                     "absolute_tolerance": abs_tol,
                 }
             )
-    extra_left = left_normalized.get("_extra_metrics")
-    extra_right = right_normalized.get("_extra_metrics")
-    if isinstance(extra_left, dict) and isinstance(extra_right, dict):
-        for name in sorted(set(extra_left) | set(extra_right)):
-            lv = extra_left.get(name)
-            rv = extra_right.get(name)
-            if lv is None or rv is None:
-                if lv is not None or rv is not None:
-                    diagnostics.append(
-                        {"metric": name, "code": "null_mismatch", "left": lv, "right": rv}
-                    )
-            elif not math.isclose(lv, rv, rel_tol=rel_tol, abs_tol=abs_tol):
+    extra_left_value: Any = left_normalized.get("_extra_metrics")
+    extra_right_value: Any = right_normalized.get("_extra_metrics")
+    extra_left: dict[str, Any] = extra_left_value if isinstance(extra_left_value, dict) else {}
+    extra_right: dict[str, Any] = extra_right_value if isinstance(extra_right_value, dict) else {}
+    for name in sorted(set(extra_left) | set(extra_right)):
+        lv = extra_left.get(name)
+        rv = extra_right.get(name)
+        if lv is None or rv is None:
+            if lv is not None or rv is not None:
                 diagnostics.append(
-                    {
-                        "metric": name,
-                        "code": "float_mismatch",
-                        "left": lv,
-                        "right": rv,
-                        "relative_tolerance": rel_tol,
-                        "absolute_tolerance": abs_tol,
-                    }
+                    {"metric": name, "code": "null_mismatch", "left": lv, "right": rv}
                 )
+        elif not math.isclose(lv, rv, rel_tol=rel_tol, abs_tol=abs_tol):
+            diagnostics.append(
+                {
+                    "metric": name,
+                    "code": "float_mismatch",
+                    "left": lv,
+                    "right": rv,
+                    "relative_tolerance": rel_tol,
+                    "absolute_tolerance": abs_tol,
+                }
+            )
     core = {
         "schema_version": "run-comparison-v1",
         "status": "matched" if not diagnostics else "mismatched",

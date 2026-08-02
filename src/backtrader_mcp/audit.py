@@ -32,7 +32,7 @@ def audit_independence(package_root: Path | None = None) -> dict[str, Any]:
                     findings.append(
                         {
                             "path": relative,
-                            "line": node.lineno,
+                            "line": getattr(node, "lineno", 0),
                             "code": "parent_relative_import",
                         }
                     )
@@ -42,7 +42,7 @@ def audit_independence(package_root: Path | None = None) -> dict[str, Any]:
                     findings.append(
                         {
                             "path": relative,
-                            "line": node.lineno,
+                            "line": getattr(node, "lineno", 0),
                             "code": "sibling_product_import",
                             "module": module,
                         }
@@ -55,7 +55,7 @@ def audit_independence(package_root: Path | None = None) -> dict[str, Any]:
                 findings.append(
                     {
                         "path": relative,
-                        "line": node.lineno,
+                        "line": getattr(node, "lineno", 0),
                         "code": "dynamic_execution",
                         "call": node.func.id,
                     }

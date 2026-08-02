@@ -14,8 +14,11 @@ transports.
 ## Distribution contract
 
 - Python 3.10 or newer.
-- MCP Python SDK `2.0.x`, using `MCPServer` and local stdio.
-- Independent wheel/source distribution; Backtrader is a separately registered runtime.
+- MCP Python SDK `>=2.0.0,<2.1` (validated at `2.0.0`), using `MCPServer` and
+  local stdio.
+- Independent wheel/source distribution; the only accepted Backtrader runtime is
+  [`cloudQuant/backtrader`](https://github.com/cloudQuant/backtrader), pinned in
+  package metadata to commit `3c967ed61be184c0099ba5bef55d4bed09ad0b4a`.
 - SQLite/WAL state, content-addressed CSV data, private draft files, HMAC
   capabilities, filesystem locks, idempotency records, and startup recovery.
 - Product-owned `prepare_strategy_run`, `start_strategy_run`,
@@ -43,18 +46,33 @@ python -m pip install -c constraints/requirements-v2.txt .
 python -m backtrader_mcp --help
 ```
 
+The package dependency installs that pinned CloudQuant source. For a source
+checkout or an environment where the dependency was skipped, run the explicit
+installer instead:
+
+```bash
+backtrader-mcp install-backtrader | python -m json.tool
+```
+
+It installs only when Backtrader is absent. If another Backtrader distribution
+is already installed, it leaves that distribution untouched and returns the
+machine-readable `installed_backtrader_untrusted` warning.
+
 Register only absolute, trusted roots in the host environment:
 
 ```text
 BACKTRADER_MCP_STATE_ROOT=/absolute/private/state
 BACKTRADER_MCP_SOURCE_ROOTS={"market_data":"/absolute/read-only/csv","functional_corpus":"/absolute/read-only/tests/functional/strategies","package_corpus":"/absolute/read-only/strategies"}
 BACKTRADER_MCP_TARGET_ROOTS={"strategies":"/absolute/generated/strategies"}
-BACKTRADER_MCP_RUNTIMES={"default":"/absolute/backtrader/source/root"}
+BACKTRADER_MCP_RUNTIMES={"default":"/absolute/cloudquant-backtrader"}
 ```
 
 Root maps are JSON objects. MCP callers receive only root IDs and relative
-paths; they cannot submit absolute paths or executable paths. The runtime root
-must contain `backtrader/__init__.py`.
+paths; they cannot submit absolute paths or executable paths. A runtime root
+must contain `backtrader/__init__.py` and have Git `origin` resolving to
+`github.com/cloudquant/backtrader`; another fork or the public PyPI package is
+rejected before a strategy run. If `BACKTRADER_MCP_RUNTIMES` is omitted, a
+verified installed CloudQuant distribution is registered as `default`.
 
 Before adding a host, export the same values in the installation shell and run
 the read-only diagnostic. Quoting the JSON values prevents the shell from
@@ -64,16 +82,19 @@ interpreting them:
 export BACKTRADER_MCP_STATE_ROOT='/absolute/private/state'
 export BACKTRADER_MCP_SOURCE_ROOTS='{"market_data":"/absolute/read-only/csv"}'
 export BACKTRADER_MCP_TARGET_ROOTS='{"strategies":"/absolute/generated/strategies"}'
-export BACKTRADER_MCP_RUNTIMES='{"default":"/absolute/backtrader/source/root"}'
+export BACKTRADER_MCP_RUNTIMES='{"default":"/absolute/cloudquant-backtrader"}'
 backtrader-mcp doctor | python -m json.tool
 ```
 
 `doctor.status` must be `passed`. The report is stable JSON and includes the
-installed product and dependency versions, configured root checks, supported
-adapters/run profiles, and the actual Backtrader `module_file`, version, Git
-commit, branch, and runtime capabilities. The CLI diagnostic itself does not
-create the state root or write to a source/target root; normal MCP server
-startup initializes its private state root before tools are available.
+installed product and dependency versions, installed-Backtrader provenance,
+configured root checks, supported adapters/run profiles, and the actual
+Backtrader `module_file`, version, Git commit, branch, provenance, and runtime
+capabilities. An existing non-CloudQuant installed package is reported as a
+warning; a configured non-CloudQuant runtime is an error. The CLI diagnostic
+itself does not create the state root or write to a source/target root; normal
+MCP server startup initializes its private state root before tools are
+available.
 
 ## Catalog modes
 
@@ -124,7 +145,7 @@ claude mcp add-json --scope project backtrader '{
     "BACKTRADER_MCP_STATE_ROOT": "/ABSOLUTE/PATH/.backtrader-mcp-state",
     "BACKTRADER_MCP_SOURCE_ROOTS": "{\"market_data\":\"/ABSOLUTE/PATH/data\"}",
     "BACKTRADER_MCP_TARGET_ROOTS": "{\"strategies\":\"/ABSOLUTE/PATH/generated-strategies\"}",
-    "BACKTRADER_MCP_RUNTIMES": "{\"default\":\"/ABSOLUTE/PATH/backtrader-source\"}"
+    "BACKTRADER_MCP_RUNTIMES": "{\"default\":\"/ABSOLUTE/PATH/cloudquant-backtrader\"}"
   }
 }'
 claude mcp list
@@ -148,7 +169,7 @@ codex mcp add \
   --env BACKTRADER_MCP_STATE_ROOT=/ABSOLUTE/PATH/.backtrader-mcp-state \
   --env 'BACKTRADER_MCP_SOURCE_ROOTS={"market_data":"/ABSOLUTE/PATH/data"}' \
   --env 'BACKTRADER_MCP_TARGET_ROOTS={"strategies":"/ABSOLUTE/PATH/generated-strategies"}' \
-  --env 'BACKTRADER_MCP_RUNTIMES={"default":"/ABSOLUTE/PATH/backtrader-source"}' \
+  --env 'BACKTRADER_MCP_RUNTIMES={"default":"/ABSOLUTE/PATH/cloudquant-backtrader"}' \
   backtrader -- /ABSOLUTE/PATH/backtrader-mcp/.runtime/bin/backtrader-mcp serve
 codex mcp list --json
 ```
@@ -203,7 +224,7 @@ Host configuration references:
 
 ## Upgrade and uninstall
 
-For a compatible `0.1.x` upgrade, stop every connected host, back up the
+For a compatible `0.2.x` upgrade, stop every connected host, back up the
 private state root, activate the dedicated environment, and reinstall:
 
 ```bash
@@ -214,7 +235,7 @@ backtrader-mcp doctor | python -m json.tool
 
 Restart the host and repeat its registration check and first request. Do not
 reuse draft validation tokens, change/run tokens, or approvals across an
-incompatible release. This `0.1.0` release does not migrate pre-P0 state.
+incompatible release. This product does not migrate pre-P0 state.
 
 To uninstall, first remove the `backtrader` MCP registration from each host
 (or delete only its matching configuration entry), stop active runs, then:
@@ -351,6 +372,12 @@ count.
   with a fixed interpreter, fixed entrypoint, minimal environment, separate
   process group, timeout, captured output, and validated result contract.
 
+Process control uses a POSIX session and resource-limit pre-exec hook on
+POSIX, while non-POSIX startup omits those options, uses a Windows process
+group when available, and preserves only the required `SystemRoot` launch
+variable. The automated suite exercises both branch contracts, but a real
+Windows fourteen-cell host run has not yet been recorded.
+
 Static AST policy and a subprocess are not an OS sandbox. Reviewed candidate
 code still runs with the local user's filesystem permissions. P0 is intended
 for trusted local strategy development; run it in a container or restricted
@@ -365,6 +392,9 @@ Run all commands from this directory:
 ```bash
 python -m pip install -e ".[test]"
 PYTHONPATH=src python -m pytest -q
+ruff check src tests scripts
+ruff format --check src tests scripts
+PYTHONPATH=src python -m mypy src/backtrader_mcp
 # With the four BACKTRADER_MCP_* root variables from the install section:
 PYTHONPATH=src python -m backtrader_mcp doctor
 PYTHONPATH=src python -m backtrader_mcp audit-independence
@@ -372,15 +402,25 @@ python scripts/run_acceptance.py --matrix all \
   --require-no-skills --require-no-agent
 ```
 
+The project dependency pins `cloudQuant/backtrader` at commit
+`3c967ed61be184c0099ba5bef55d4bed09ad0b4a`; no public PyPI Backtrader fallback
+is accepted. Test runtime resolution is explicit
+`BACKTRADER_MCP_TEST_RUNTIME_ROOT`, then a sibling checkout, then the installed
+package. Every candidate is provenance-checked against CloudQuant; an invalid
+or untrusted explicit override fails closed. Ruff is the only formatter and
+mypy is a required quality gate. The current branch-coverage gate is 80%; its
+exact configured value is the release criterion.
+
 Protocol tests install `mcp==2.0.0` only into a temporary target directory.
 They must not upgrade or remove the user's base-environment `mcp==1.20.0`.
 The fixed acceptance entrypoint consumes a structured 14-cell artifact rather
 than inferring success from pytest progress dots. It first builds a temporary
-wheel, installs that wheel with `--no-deps` into a clean temporary target, and
-runs pytest from a separate directory outside this source checkout. Test and
-runtime dependencies must therefore already be available in the active
-environment, but `backtrader_mcp` itself is imported only from the installed
-wheel target.
+wheel, installs the wheel's `[test]` dependency closure under the repository
+constraints into a clean temporary target, and runs pytest from a separate
+directory outside this source checkout. That target must contain the pinned
+CloudQuant Backtrader distribution and a matching direct-URL provenance record,
+so it does not borrow the active environment's product dependencies.
+`backtrader_mcp` is imported only from the installed wheel target.
 
 The matrix executes all seven archetypes with both output profiles as real
 runonce/runnext child-process backtests, covers all six adapters plus
@@ -411,8 +451,11 @@ Python 执行或网络传输。
 ## 分发契约
 
 - Python 3.10 及以上。
-- MCP Python SDK `2.0.x`，使用 `MCPServer` 与本地 stdio。
-- 独立的 wheel / 源码分发；Backtrader 是单独注册的运行时。
+- MCP Python SDK `>=2.0.0,<2.1`（以 `2.0.0` 验证），使用 `MCPServer` 与本地
+  stdio。
+- 独立的 wheel / 源码分发；唯一可接受的 Backtrader 运行时是
+  [`cloudQuant/backtrader`](https://github.com/cloudQuant/backtrader)，包元数据固定到
+  commit `3c967ed61be184c0099ba5bef55d4bed09ad0b4a`。
 - SQLite/WAL 状态、内容寻址的 CSV 数据、私有草稿文件、HMAC 能力令牌、文件系统
   锁、幂等性记录以及启动恢复。
 - 产品自有的 `prepare_strategy_run`、`start_strategy_run`、
@@ -437,17 +480,30 @@ python -m pip install -c constraints/requirements-v2.txt .
 python -m backtrader_mcp --help
 ```
 
+包依赖会安装该固定的 CloudQuant 源码。若从源码检出运行或此前跳过了依赖安装，可改用
+显式安装入口：
+
+```bash
+backtrader-mcp install-backtrader | python -m json.tool
+```
+
+它只会在 Backtrader 缺失时安装；若已存在其他 Backtrader 发行版，会保持原环境不变并
+返回机器可读的 `installed_backtrader_untrusted` 警告。
+
 只在宿主环境中注册绝对、可信的 root：
 
 ```text
 BACKTRADER_MCP_STATE_ROOT=/absolute/private/state
 BACKTRADER_MCP_SOURCE_ROOTS={"market_data":"/absolute/read-only/csv","functional_corpus":"/absolute/read-only/tests/functional/strategies","package_corpus":"/absolute/read-only/strategies"}
 BACKTRADER_MCP_TARGET_ROOTS={"strategies":"/absolute/generated/strategies"}
-BACKTRADER_MCP_RUNTIMES={"default":"/absolute/backtrader/source/root"}
+BACKTRADER_MCP_RUNTIMES={"default":"/absolute/cloudquant-backtrader"}
 ```
 
 Root 映射是 JSON 对象。MCP 调用方只能拿到 root ID 和相对路径，不能提交绝对路径或
-可执行路径。运行时 root 必须包含 `backtrader/__init__.py`。
+可执行路径。运行时 root 必须包含 `backtrader/__init__.py`，且 Git `origin` 必须解析为
+`github.com/cloudquant/backtrader`；其他 fork 或公开 PyPI 包会在启动策略前被拒绝。若未
+设置 `BACKTRADER_MCP_RUNTIMES`，已验证的已安装 CloudQuant 分发会自动注册为
+`default`。
 
 新增宿主之前，先在安装 shell 中导出同样的值并运行只读诊断。给 JSON 值加引号可以
 避免被 shell 解释：
@@ -456,15 +512,16 @@ Root 映射是 JSON 对象。MCP 调用方只能拿到 root ID 和相对路径�
 export BACKTRADER_MCP_STATE_ROOT='/absolute/private/state'
 export BACKTRADER_MCP_SOURCE_ROOTS='{"market_data":"/absolute/read-only/csv"}'
 export BACKTRADER_MCP_TARGET_ROOTS='{"strategies":"/absolute/generated/strategies"}'
-export BACKTRADER_MCP_RUNTIMES='{"default":"/absolute/backtrader/source/root"}'
+export BACKTRADER_MCP_RUNTIMES='{"default":"/absolute/cloudquant-backtrader"}'
 backtrader-mcp doctor | python -m json.tool
 ```
 
-`doctor.status` 必须为 `passed`。报告是稳定的 JSON，包含已安装产品及依赖版本、已
-配置的 root 检查、支持的 adapter / run profile，以及实际的 Backtrader
-`module_file`、版本、Git commit、分支和运行时能力。CLI 诊断本身不会创建 state
-root，也不会写入 source / target root；正常 MCP 服务器启动时才会在工具可用之前
-初始化自己的私有 state root。
+`doctor.status` 必须为 `passed`。报告是稳定的 JSON，包含已安装产品及依赖版本、已安装
+Backtrader 的溯源、已配置的 root 检查、支持的 adapter / run profile，以及实际的
+Backtrader `module_file`、版本、Git commit、分支、溯源和运行时能力。已有的非
+CloudQuant 已安装包会显示 warning；已配置的非 CloudQuant 运行时则是 error。CLI 诊断
+本身不会创建 state root，也不会写入 source / target root；正常 MCP 服务器启动时才会
+在工具可用之前初始化自己的私有 state root。
 
 ## Catalog 模式
 
@@ -512,7 +569,7 @@ claude mcp add-json --scope project backtrader '{
     "BACKTRADER_MCP_STATE_ROOT": "/ABSOLUTE/PATH/.backtrader-mcp-state",
     "BACKTRADER_MCP_SOURCE_ROOTS": "{\"market_data\":\"/ABSOLUTE/PATH/data\"}",
     "BACKTRADER_MCP_TARGET_ROOTS": "{\"strategies\":\"/ABSOLUTE/PATH/generated-strategies\"}",
-    "BACKTRADER_MCP_RUNTIMES": "{\"default\":\"/ABSOLUTE/PATH/backtrader-source\"}"
+    "BACKTRADER_MCP_RUNTIMES": "{\"default\":\"/ABSOLUTE/PATH/cloudquant-backtrader\"}"
   }
 }'
 claude mcp list
@@ -535,7 +592,7 @@ codex mcp add \
   --env BACKTRADER_MCP_STATE_ROOT=/ABSOLUTE/PATH/.backtrader-mcp-state \
   --env 'BACKTRADER_MCP_SOURCE_ROOTS={"market_data":"/ABSOLUTE/PATH/data"}' \
   --env 'BACKTRADER_MCP_TARGET_ROOTS={"strategies":"/ABSOLUTE/PATH/generated-strategies"}' \
-  --env 'BACKTRADER_MCP_RUNTIMES={"default":"/ABSOLUTE/PATH/backtrader-source"}' \
+  --env 'BACKTRADER_MCP_RUNTIMES={"default":"/ABSOLUTE/PATH/cloudquant-backtrader"}' \
   backtrader -- /ABSOLUTE/PATH/backtrader-mcp/.runtime/bin/backtrader-mcp serve
 codex mcp list --json
 ```
@@ -586,7 +643,7 @@ Backtrader 版本 / commit，以及 catalog `entry_count=1155`。各宿主的发
 
 ## 升级与卸载
 
-兼容的 `0.1.x` 升级：停止所有已连接宿主、备份私有 state root、激活专用环境并重装：
+兼容的 `0.2.x` 升级：停止所有已连接宿主、备份私有 state root、激活专用环境并重装：
 
 ```bash
 . .runtime/bin/activate
@@ -595,7 +652,7 @@ backtrader-mcp doctor | python -m json.tool
 ```
 
 重启宿主并重复其注册检查和首个请求。不要跨不兼容版本复用草稿校验令牌、change/run
-令牌或审批。本 `0.1.0` 版本不迁移 pre-P0 状态。
+令牌或审批。本产品不迁移 pre-P0 state。
 
 卸载时，先从每个宿主移除 `backtrader` MCP 注册（或只删除其对应配置项），停止活动
 运行，然后：
@@ -710,6 +767,11 @@ Pandas 输入必须使用 `source_type=materialized_dataframe` 并引用一个�
 - 候选代码绝不被 MCP 进程导入。worker 用固定解释器、固定入口、最小环境、独立进程
   组、超时、捕获输出和已校验的结果契约来启动它。
 
+进程控制在 POSIX 上使用独立 session 与 resource-limit pre-exec hook；在非 POSIX 上
+不会传入这两个参数、可用时使用 Windows process group，并只保留启动所需的
+`SystemRoot` 环境变量。自动化套件覆盖两类分支契约，但尚未记录真实 Windows 的十四格
+host 运行结果。
+
 静态 AST 策略加子进程并不是 OS 沙箱。经审查的候选代码仍以本地用户的文件系统权限运
 行。P0 面向可信的本地策略开发；对恶意代码请在容器或受限 OS 账户中运行。SQLite 状态
 是单主机的，带日志的目录交换可崩溃恢复，但不是多主机分布式事务。取消是基于进程的，
@@ -722,6 +784,9 @@ Pandas 输入必须使用 `source_type=materialized_dataframe` 并引用一个�
 ```bash
 python -m pip install -e ".[test]"
 PYTHONPATH=src python -m pytest -q
+ruff check src tests scripts
+ruff format --check src tests scripts
+PYTHONPATH=src python -m mypy src/backtrader_mcp
 # 配合安装章节中的四个 BACKTRADER_MCP_* root 变量：
 PYTHONPATH=src python -m backtrader_mcp doctor
 PYTHONPATH=src python -m backtrader_mcp audit-independence
@@ -729,11 +794,19 @@ python scripts/run_acceptance.py --matrix all \
   --require-no-skills --require-no-agent
 ```
 
+项目依赖固定 `cloudQuant/backtrader` 的 commit
+`3c967ed61be184c0099ba5bef55d4bed09ad0b4a`，不接受公开 PyPI Backtrader fallback。
+测试运行时依次解析显式 `BACKTRADER_MCP_TEST_RUNTIME_ROOT`、相邻 checkout、已安装包；
+每个候选都必须通过 CloudQuant 溯源校验，显式路径无效或不可信时会 fail closed。Ruff 是
+唯一 formatter，mypy 是 required 质量门禁。当前分支覆盖率门槛为 80%，以配置中的精确值
+作为发布标准。
+
 协议测试只把 `mcp==2.0.0` 安装到一个临时目标目录，绝不升级或移除用户基础环境的
 `mcp==1.20.0`。固定的验收入口消费一个结构化的 14 格 artifact，而不是从 pytest 进
-度点推断成功。它先构建临时 wheel，用 `--no-deps` 把该 wheel 装进干净的临时目标，
-再从本源码检出之外的另一个目录运行 pytest。因此测试和运行时依赖必须已在活动环境中
-可用，但 `backtrader_mcp` 本身只从已安装的 wheel 目标导入。
+度点推断成功。它先构建临时 wheel，再根据仓库 constraints 把 wheel 的 `[test]` 依赖
+闭包安装到干净的临时目标，并从本源码检出之外的另一个目录运行 pytest。该 target 必须
+包含固定的 CloudQuant Backtrader 分发及匹配的 direct-URL 溯源记录，因此不会借用活动
+环境中的产品依赖；`backtrader_mcp` 本身只从已安装的 wheel target 导入。
 
 矩阵把全部七个 archetype × 两种输出 profile 作为真实的 runonce/runnext 子进程回测
 执行，覆盖全部六个 adapter 加 resample/replay，并记录 inspect/register/preview、

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .backtrader_runtime import inspect_installed_backtrader, inspect_runtime_root
 from .data import INPUT_FORMAT_ADAPTERS
 from .jobs import RUN_PROFILES
 from .settings import Settings
@@ -20,6 +21,8 @@ _RUNTIME_PROBE = """
 import json
 from pathlib import Path
 import backtrader
+from backtrader.feeds.csvgeneric import GenericCSVData
+from backtrader.feeds.pandafeed import PandasData
 
 print(json.dumps({
     "module_file": str(Path(backtrader.__file__).resolve()),
@@ -27,8 +30,8 @@ print(json.dumps({
     "capabilities": {
         "cerebro": hasattr(backtrader, "Cerebro"),
         "strategy": hasattr(backtrader, "Strategy"),
-        "generic_csv": hasattr(backtrader.feeds, "GenericCSVData"),
-        "pandas_data": hasattr(backtrader.feeds, "PandasData"),
+        "generic_csv": GenericCSVData is not None,
+        "pandas_data": PandasData is not None,
     },
 }, sort_keys=True))
 """.strip()
@@ -93,11 +96,15 @@ def _git_value(root: Path, *arguments: str) -> str | None:
 
 
 def _runtime_report(runtime_id: str, root: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    identity = inspect_runtime_root(root)
     report: dict[str, Any] = {
         "runtime_id": runtime_id,
         "root": str(root),
         "exists": root.is_dir(),
-        "package_marker": (root / "backtrader" / "__init__.py").is_file(),
+        "package_marker": identity["package_marker"],
+        "repository": identity["repository"],
+        "provenance": identity["provenance"],
+        "trusted_source": identity["trusted"],
         "module_file": None,
         "version": None,
         "commit": _git_value(root, "rev-parse", "HEAD"),
@@ -117,6 +124,17 @@ def _runtime_report(runtime_id: str, root: Path) -> tuple[dict[str, Any], list[d
             }
         )
         return report, issues
+    if not identity["trusted"]:
+        issues.append(
+            {
+                "code": "runtime_untrusted_source",
+                "severity": "error",
+                "subject": runtime_id,
+                "message": "runtime must originate from cloudQuant/backtrader",
+                "suggestion": "set BACKTRADER_MCP_RUNTIMES to a cloudQuant/backtrader checkout or run backtrader-mcp install-backtrader",
+            }
+        )
+        return report, issues
 
     environment = {
         "PATH": os.environ.get("PATH", ""),
@@ -125,6 +143,7 @@ def _runtime_report(runtime_id: str, root: Path) -> tuple[dict[str, Any], list[d
         "PYTHONPATH": str(root),
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONNOUSERSITE": "1",
+        "BACKTRADER_LIGHT_IMPORT": "1",
     }
     try:
         completed = subprocess.run(
@@ -205,7 +224,7 @@ def _runtime_report(runtime_id: str, root: Path) -> tuple[dict[str, Any], list[d
                 "suggestion": "use a Backtrader runtime that exposes Cerebro, Strategy, and feed classes",
             }
         )
-    if report["commit"] is None:
+    if report["commit"] is None and identity["provenance"] == "unavailable":
         issues.append(
             {
                 "code": "runtime_commit_unavailable",
@@ -243,6 +262,27 @@ def doctor_report(settings: Settings) -> dict[str, Any]:
             and (pandas_pair[0] in {2, 3} or pandas_pair[0] == 1 and pandas_pair[1] >= 5),
         ),
     }
+    installed_backtrader = inspect_installed_backtrader()
+    if not installed_backtrader["installed"]:
+        issues.append(
+            {
+                "code": "cloudquant_backtrader_missing",
+                "severity": "warning",
+                "subject": "backtrader",
+                "message": "cloudQuant/backtrader is not installed in the active interpreter",
+                "suggestion": "run backtrader-mcp install-backtrader",
+            }
+        )
+    elif not installed_backtrader["trusted"]:
+        issues.append(
+            {
+                "code": "installed_backtrader_untrusted",
+                "severity": "warning",
+                "subject": "backtrader",
+                "message": "installed Backtrader is not cloudQuant/backtrader",
+                "suggestion": "remove it explicitly, then run backtrader-mcp install-backtrader",
+            }
+        )
     if sys.version_info < (3, 10):
         issues.append(
             {
@@ -340,8 +380,8 @@ def doctor_report(settings: Settings) -> dict[str, Any]:
                 "suggestion": "register a Backtrader source runtime via BACKTRADER_MCP_RUNTIMES",
             }
         )
-    for runtime_id, root in sorted(settings.runtimes.items()):
-        runtime, runtime_issues = _runtime_report(runtime_id, root)
+    for runtime_id, runtime_root in sorted(settings.runtimes.items()):
+        runtime, runtime_issues = _runtime_report(runtime_id, runtime_root)
         runtimes.append(runtime)
         issues.extend(runtime_issues)
 
@@ -357,6 +397,7 @@ def doctor_report(settings: Settings) -> dict[str, Any]:
             "python_version": ".".join(str(value) for value in sys.version_info[:3]),
             "dependencies": dependencies,
         },
+        "installed_backtrader": installed_backtrader,
         "roots": {
             "state": state,
             "sources": source_roots,

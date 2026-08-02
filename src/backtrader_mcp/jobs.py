@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import signal
 import subprocess
 import sys
 import uuid
@@ -11,11 +10,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .backtrader_runtime import require_cloudquant_runtime
 from .data import DatasetService
 from .drafts import DraftService
 from .errors import Conflict, InvalidRequest, NotFound
 from .locks import LockManager
 from .logging_config import get_logger
+from .process_control import is_posix, platform_environment, popen_group_options, terminate_pid
 from .security import TokenSigner
 from .settings import Settings
 from .state import StateStore
@@ -25,12 +26,23 @@ logger = get_logger("jobs")
 
 TERMINAL_STATES = {"CANCELLED", "SUCCEEDED", "FAILED", "TIMED_OUT", "ORPHANED"}
 ACTIVE_STATES = {"QUEUED", "RUNNING", "CANCEL_REQUESTED"}
-RUN_PROFILES = {"runonce", "runnext", "runonce_runnext_compare", "fixed_tests"}
+RUN_PROFILE_MODES = {
+    "runonce": ("runonce",),
+    "runnext": ("runnext",),
+    "runonce_runnext_compare": ("runonce", "runnext"),
+    "fixed_tests": ("runonce", "runnext"),
+}
+RUN_PROFILES = set(RUN_PROFILE_MODES)
 
 
 def _pid_alive(pid: int | None) -> bool:
     if not pid or pid < 2:
         return False
+    if not is_posix():
+        # On Windows os.kill(pid, 0) is not a harmless liveness probe; any
+        # non-console signal can terminate the process. Cancellation itself is
+        # idempotent, so request it for a structurally valid recorded PID.
+        return True
     try:
         waited_pid, _ = os.waitpid(pid, os.WNOHANG)
         if waited_pid == pid:
@@ -93,15 +105,21 @@ class JobService:
         if prior is not None:
             return prior
         verified = self.drafts.verify_validation(draft_id, validation_token)
+        declared_run_modes = verified["draft"]["strategy_spec"]["run_modes"]
+        execution_modes = list(RUN_PROFILE_MODES[run_profile_id])
+        missing_modes = [mode for mode in execution_modes if mode not in declared_run_modes]
+        if missing_modes:
+            raise InvalidRequest(
+                "run_profile_id requires StrategySpec run_modes to include: "
+                f"{', '.join(missing_modes)}"
+            )
         dataset = self.datasets.get_dataset(dataset_id)
         if verified["draft"]["strategy_spec"]["dataset_id"] != dataset_id:
             raise Conflict("run dataset does not match the canonical StrategySpec dataset_id")
         runtime = self.settings.runtimes.get(runtime_id)
         if runtime is None:
             raise NotFound(f"Backtrader runtime not registered: {runtime_id}")
-        runtime = runtime.resolve(strict=True)
-        if not (runtime / "backtrader" / "__init__.py").is_file():
-            raise InvalidRequest("registered runtime does not contain a Backtrader source package")
+        runtime = require_cloudquant_runtime(runtime)
         run_plan_id = f"runplan_{uuid.uuid4().hex}"
         plan_binding = {
             "run_plan_id": run_plan_id,
@@ -121,7 +139,8 @@ class JobService:
             "runtime_version_file_hash": file_hash(runtime / "backtrader" / "version.py"),
             "timeout_seconds": timeout_seconds,
             "run_profile_id": run_profile_id,
-            "run_modes": verified["draft"]["strategy_spec"]["run_modes"],
+            "run_modes": declared_run_modes,
+            "execution_modes": execution_modes,
             "output_profile": verified["draft"]["profile"],
         }
         run_plan_hash = sha256_json(plan_binding)
@@ -195,7 +214,7 @@ class JobService:
             runtime = self.settings.runtimes.get(plan["runtime_id"])
             if runtime is None:
                 raise NotFound(f"Backtrader runtime not registered: {plan['runtime_id']}")
-            runtime = runtime.resolve(strict=True)
+            runtime = require_cloudquant_runtime(runtime)
             current = {
                 "draft_revision": draft["revision"],
                 "draft_manifest_hash": draft["manifest_hash"],
@@ -238,6 +257,7 @@ class JobService:
                 "run_profile": {
                     "timeout_seconds": plan["timeout_seconds"],
                     "run_modes": plan["run_modes"],
+                    "execution_modes": plan["execution_modes"],
                     "profile_id": plan["run_profile_id"],
                 },
                 "approval_id": approval_id,
@@ -262,6 +282,7 @@ class JobService:
                 "entrypoint": entrypoint,
                 "timeout_seconds": plan["timeout_seconds"],
                 "run_profile_id": plan["run_profile_id"],
+                "execution_modes": plan["execution_modes"],
                 "resource_limits": self.settings.resource_limits(),
                 "worker_pid": None,
                 "child_pid": None,
@@ -285,13 +306,15 @@ class JobService:
                 },
             )
         package_src = str(Path(__file__).resolve().parents[1])
-        environment = {
-            "PATH": os.environ.get("PATH", ""),
-            "LANG": os.environ.get("LANG", "C.UTF-8"),
-            "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
-            "PYTHONPATH": os.pathsep.join([package_src, str(runtime)]),
-            "BACKTRADER_MCP_LOG_LEVEL": os.environ.get("BACKTRADER_MCP_LOG_LEVEL", "WARNING"),
-        }
+        environment = platform_environment(
+            {
+                "PATH": os.environ.get("PATH", ""),
+                "LANG": os.environ.get("LANG", "C.UTF-8"),
+                "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+                "PYTHONPATH": os.pathsep.join([package_src, str(runtime)]),
+                "BACKTRADER_MCP_LOG_LEVEL": os.environ.get("BACKTRADER_MCP_LOG_LEVEL", "WARNING"),
+            }
+        )
         supervisor_stdout = (job_root / "supervisor.stdout.log").open("ab")
         supervisor_stderr = (job_root / "supervisor.stderr.log").open("ab")
         try:
@@ -310,8 +333,8 @@ class JobService:
                 stdin=subprocess.DEVNULL,
                 stdout=supervisor_stdout,
                 stderr=supervisor_stderr,
-                start_new_session=True,
                 close_fds=True,
+                **popen_group_options(),
             )
         except OSError as exc:
             error_message = f"worker launch failed: {exc}"
@@ -377,11 +400,8 @@ class JobService:
                 child_pid = job.get("child_pid")
                 worker_pid = job.get("worker_pid")
                 for pid in (child_pid, worker_pid):
-                    if _pid_alive(pid):
-                        try:
-                            os.killpg(pid, signal.SIGTERM)
-                        except (OSError, ProcessLookupError):
-                            pass
+                    if isinstance(pid, int) and not isinstance(pid, bool) and _pid_alive(pid):
+                        terminate_pid(pid)
                 self.state.update(
                     "job",
                     job_id,

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import keyword
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .errors import InvalidRequest
-from .util import sha256_json
+from .util import canonical_json, sha256_json
 
 ARCHETYPES = (
     "single_data_indicator",
@@ -55,6 +56,10 @@ class StrategySpec:
     exit: dict[str, Any] = field(default_factory=dict)
     sizing: dict[str, Any] = field(default_factory=dict)
     risk: dict[str, Any] = field(default_factory=dict)
+    ir: dict[str, Any] = field(default_factory=dict)
+    extensions: dict[str, Any] = field(default_factory=dict)
+    non_goals: list[str] = field(default_factory=list)
+    undecided: list[str] = field(default_factory=list)
     run_modes: list[str] = field(default_factory=lambda: ["runonce", "runnext"])
     allowed_imports: list[str] = field(default_factory=lambda: ["backtrader"])
     cash_value: float = 100_000.0
@@ -85,6 +90,7 @@ class StrategySpec:
             "allowed_imports",
             "cash",
             "commission",
+            "slippage",
             "spec_hash",
             "ir",
             "extensions",
@@ -103,11 +109,16 @@ class StrategySpec:
             raise InvalidRequest(f"StrategySpec has unknown fields: {', '.join(sorted(unknown))}")
         if "spec_version" in value and value["spec_version"] != "strategy-spec-v1":
             raise InvalidRequest("StrategySpec spec_version must be strategy-spec-v1")
-        archetype = LEGACY_ARCHETYPES.get(value.get("archetype"), value.get("archetype"))
+        raw_archetype = value.get("archetype")
+        if not isinstance(raw_archetype, str):
+            raise InvalidRequest(
+                f"StrategySpec archetype is invalid: {raw_archetype!r}; "
+                f"valid: {', '.join(ARCHETYPES)}"
+            )
+        archetype = LEGACY_ARCHETYPES.get(raw_archetype, raw_archetype)
         if archetype not in ARCHETYPES:
             raise InvalidRequest(
-                f"StrategySpec archetype is invalid: {archetype!r}; "
-                f"valid: {', '.join(ARCHETYPES)}"
+                f"StrategySpec archetype is invalid: {archetype!r}; valid: {', '.join(ARCHETYPES)}"
             )
         legacy_class_name = value.get("class_name", "GeneratedStrategy")
         name = value.get("name", legacy_class_name)
@@ -179,6 +190,9 @@ class StrategySpec:
                 or any(not isinstance(line, str) or not line.isidentifier() for line in lines)
             ):
                 raise InvalidRequest("StrategySpec feed descriptor is invalid")
+            dataset_feed = feed.get("dataset_feed", feed_name if index == 0 else "primary")
+            if not isinstance(dataset_feed, str) or not dataset_feed.isidentifier():
+                raise InvalidRequest("StrategySpec dataset feed binding is invalid")
             normalized_feeds.append(
                 {
                     "name": feed_name,
@@ -186,11 +200,9 @@ class StrategySpec:
                     "symbol": symbol,
                     "timeframe": timeframe,
                     "lines": sorted(set(lines)),
+                    "dataset_feed": dataset_feed,
                 }
             )
-            dataset_feed = feed.get("dataset_feed", feed_name if index == 0 else "primary")
-            if not isinstance(dataset_feed, str) or not dataset_feed.isidentifier():
-                raise InvalidRequest("StrategySpec dataset feed binding is invalid")
             dataset_feed_names.append(dataset_feed)
         parameters = value.get("parameters", {})
         if isinstance(parameters, dict):
@@ -203,7 +215,9 @@ class StrategySpec:
                         else (
                             "int"
                             if isinstance(default, int)
-                            else "float" if isinstance(default, float) else "str"
+                            else "float"
+                            if isinstance(default, float)
+                            else "str"
                         )
                     ),
                     "default": default,
@@ -225,6 +239,7 @@ class StrategySpec:
                 or not parameter_name.isidentifier()
                 or parameter_name.startswith("_")
                 or parameter_name in parameter_names
+                or not isinstance(parameter_type, str)
                 or parameter_type not in PARAMETER_TYPES
             ):
                 raise InvalidRequest(
@@ -232,12 +247,15 @@ class StrategySpec:
                     f"type must be one of {', '.join(sorted(PARAMETER_TYPES))} and name must be a "
                     "unique identifier"
                 )
-            expected_type = {"int": int, "float": (int, float), "bool": bool, "str": str}[
-                parameter_type
-            ]
-            if not isinstance(default, expected_type) or (
-                parameter_type in {"int", "float"} and isinstance(default, bool)
-            ):
+            if parameter_type == "int":
+                valid_default = isinstance(default, int) and not isinstance(default, bool)
+            elif parameter_type == "float":
+                valid_default = isinstance(default, (int, float)) and not isinstance(default, bool)
+            elif parameter_type == "bool":
+                valid_default = isinstance(default, bool)
+            else:
+                valid_default = isinstance(default, str)
+            if not valid_default:
                 raise InvalidRequest(
                     f"strategy parameter {parameter_name!r} has the wrong default type"
                 )
@@ -329,6 +347,27 @@ class StrategySpec:
         slippage = value.get("slippage", risk.get("slippage", 0.0))
         if not isinstance(slippage, (int, float)) or isinstance(slippage, bool) or slippage < 0:
             raise InvalidRequest("slippage must be a non-negative number")
+
+        def canonical_object(field_name: str) -> dict[str, Any]:
+            raw = value.get(field_name, {})
+            if not isinstance(raw, dict):
+                raise InvalidRequest(f"StrategySpec {field_name} must be an object")
+            try:
+                normalized = json.loads(canonical_json(raw))
+            except (TypeError, ValueError) as exc:
+                raise InvalidRequest(
+                    f"StrategySpec {field_name} must contain canonical JSON values"
+                ) from exc
+            if not isinstance(normalized, dict):  # Defensive after the type check above.
+                raise InvalidRequest(f"StrategySpec {field_name} must be an object")
+            return normalized
+
+        def string_list(field_name: str) -> list[str]:
+            raw = value.get(field_name, [])
+            if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+                raise InvalidRequest(f"StrategySpec {field_name} must be an array of strings")
+            return list(raw)
+
         parsed = cls(
             spec_version="strategy-spec-v1",
             name=name,
@@ -343,6 +382,10 @@ class StrategySpec:
             exit=exit_rules,
             sizing=sizing,
             risk=risk,
+            ir=canonical_object("ir"),
+            extensions=canonical_object("extensions"),
+            non_goals=string_list("non_goals"),
+            undecided=string_list("undecided"),
             run_modes=run_modes,
             allowed_imports=allowed_imports,
             cash_value=float(cash),

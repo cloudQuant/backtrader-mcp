@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 import backtrader_mcp.doctor as doctor_module
@@ -49,7 +50,7 @@ def _create_synthetic_runtime(tmp_path: Path) -> Path:
 
 def _supported_distributions(monkeypatch) -> None:
     versions = {
-        "backtrader-mcp": "0.1.0",
+        "backtrader-mcp": "0.2.0",
         "mcp": "2.0.0",
         "pandas": "2.2.3",
     }
@@ -85,6 +86,7 @@ def test_doctor_cli_reports_actual_runtime_without_mutating_state(monkeypatch, t
     assert captured.err == ""
     assert report["schema_version"] == "backtrader-mcp-doctor-v1"
     assert report["status"] == "passed"
+    assert report["product"]["version"] == "0.2.0"
     assert report["product"]["dependencies"]["mcp"]["version"] == "2.0.0"
     runtime = report["runtimes"][0]
     assert runtime["runtime_id"] == "default"
@@ -106,6 +108,52 @@ def test_doctor_cli_reports_actual_runtime_without_mutating_state(monkeypatch, t
     assert not state.exists(), "doctor must remain read-only"
 
 
+def test_doctor_runtime_probe_uses_cloudquant_light_import(monkeypatch, tmp_path):
+    runtime = _create_synthetic_runtime(tmp_path)
+    monkeypatch.setattr(
+        doctor_module,
+        "inspect_runtime_root",
+        lambda _: {
+            "trusted": True,
+            "package_marker": True,
+            "repository": "github.com/cloudquant/backtrader",
+            "provenance": "git_remote",
+        },
+    )
+    monkeypatch.setattr(doctor_module, "_git_value", lambda *_: None)
+    probe_environments: list[dict[str, str]] = []
+
+    def probe(command, **kwargs):
+        probe_environments.append(kwargs["env"])
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(
+                {
+                    "module_file": str(runtime / "backtrader" / "__init__.py"),
+                    "version": "1.3.0",
+                    "capabilities": {
+                        "cerebro": True,
+                        "strategy": True,
+                        "generic_csv": True,
+                        "pandas_data": True,
+                    },
+                }
+            ),
+            "",
+        )
+
+    monkeypatch.setattr(doctor_module.subprocess, "run", probe)
+
+    report, issues = doctor_module._runtime_report("default", runtime)
+
+    assert report["status"] == "passed"
+    assert issues == []
+    assert len(probe_environments) == 1
+    assert probe_environments[0]["BACKTRADER_LIGHT_IMPORT"] == "1"
+    assert probe_environments[0]["PYTHONPATH"] == str(runtime)
+
+
 def test_doctor_cli_does_not_write_any_configured_root_or_runtime(monkeypatch, tmp_path, capsys):
     _supported_distributions(monkeypatch)
     runtime = _create_synthetic_runtime(tmp_path)
@@ -119,11 +167,42 @@ def test_doctor_cli_does_not_write_any_configured_root_or_runtime(monkeypatch, t
     exit_code = main(["doctor"])
     report = json.loads(capsys.readouterr().out)
 
-    assert exit_code == 0, report["issues"]
+    assert exit_code == 1
+    assert any(issue["code"] == "runtime_untrusted_source" for issue in report["issues"])
     assert _tree_snapshot(tmp_path) == before
     assert not state.exists()
     assert not list(runtime.rglob("*.pyc"))
     assert not list(runtime.rglob("__pycache__"))
+
+
+def test_doctor_warns_when_the_active_backtrader_is_not_cloudquant(monkeypatch, tmp_path, capsys):
+    _supported_distributions(monkeypatch)
+    _configure_roots(
+        monkeypatch,
+        tmp_path,
+        runtimes={"default": str(REPOSITORY_ROOT / "backtrader")},
+    )
+    monkeypatch.setattr(
+        doctor_module,
+        "inspect_installed_backtrader",
+        lambda: {
+            "installed": True,
+            "trusted": False,
+            "root": "/site-packages",
+            "package_marker": True,
+            "version": "1.9.78.123",
+            "repository": "github.com/mementum/backtrader",
+            "provenance": "direct_url_vcs",
+            "reason": "Backtrader does not originate from cloudQuant/backtrader",
+        },
+    )
+
+    exit_code = main(["doctor"])
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0, report["issues"]
+    assert report["installed_backtrader"]["trusted"] is False
+    assert any(issue["code"] == "installed_backtrader_untrusted" for issue in report["issues"])
 
 
 def test_doctor_cli_fails_closed_when_runtime_is_not_configured(monkeypatch, tmp_path, capsys):

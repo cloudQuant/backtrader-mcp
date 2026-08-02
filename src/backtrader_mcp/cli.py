@@ -24,6 +24,10 @@ def build_parser() -> argparse.ArgumentParser:
         "doctor",
         help="diagnose this installation, configured roots, and Backtrader runtimes",
     )
+    subparsers.add_parser(
+        "install-backtrader",
+        help="install pinned cloudQuant/backtrader when Backtrader is absent",
+    )
     approval = subparsers.add_parser(
         "approve", help="create a trusted local approval record for a prepared change"
     )
@@ -79,6 +83,7 @@ def _summarize_job(job: dict[str, Any]) -> dict[str, Any]:
 def _list_objects(
     service: BacktraderMCPService, kind: str, state_filter: str | None, limit: int
 ) -> dict[str, Any]:
+    items: list[dict[str, Any]]
     if kind == "approval":
         items = service.state.list_approvals()
     elif kind == "audit":
@@ -156,6 +161,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             from .doctor import doctor_report
 
             result = doctor_report(settings)
+        elif arguments.command == "install-backtrader":
+            from .backtrader_runtime import ensure_cloudquant_backtrader
+
+            result = ensure_cloudquant_backtrader()
         else:
             service = BacktraderMCPService(settings)
         if arguments.command == "approve":

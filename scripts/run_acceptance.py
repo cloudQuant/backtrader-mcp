@@ -16,6 +16,13 @@ PRODUCT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_SRC = (PRODUCT_ROOT / "src").resolve()
 FIXED_TEST = PRODUCT_ROOT / "tests" / "test_acceptance_matrix.py"
 FIXED_TEST_NODE = f"{FIXED_TEST}::test_structured_fourteen_cell_acceptance_matrix"
+PROTOCOL_TEST = PRODUCT_ROOT / "tests" / "test_protocol_v2.py"
+CONSTRAINTS = PRODUCT_ROOT / "constraints" / "requirements-v2.txt"
+EXPECTED_DEPENDENCY_VERSIONS = {
+    "backtrader": "1.3.0",
+    "mcp": "2.0.0",
+}
+EXPECTED_BACKTRADER_REPOSITORY = "github.com/cloudquant/backtrader"
 
 
 def _run(
@@ -48,6 +55,7 @@ def _probe_installed(
 ) -> tuple[dict[str, Any], subprocess.CompletedProcess[str]]:
     probe_code = """
 import importlib.util
+import importlib.metadata
 import json
 import os
 from pathlib import Path
@@ -55,6 +63,7 @@ import sys
 
 import backtrader_mcp
 from backtrader_mcp.audit import audit_independence
+from backtrader_mcp.backtrader_runtime import inspect_installed_backtrader
 
 origin = Path(backtrader_mcp.__file__).resolve()
 source_src = Path(os.environ["BACKTRADER_MCP_SOURCE_SRC"]).resolve()
@@ -73,6 +82,11 @@ print(json.dumps({
         "skills_absent": importlib.util.find_spec("backtrader_skills") is None,
         "agent_absent": importlib.util.find_spec("backtrader_agent") is None,
     },
+    "dependency_versions": {
+        name: importlib.metadata.version(name)
+        for name in ("backtrader", "mcp", "pandas", "pytest")
+    },
+    "backtrader_provenance": inspect_installed_backtrader(),
     "independence": audit_independence(origin.parent),
 }, sort_keys=True))
 """
@@ -197,11 +211,12 @@ def main(argv: list[str] | None = None) -> int:
                     "pip",
                     "install",
                     "--disable-pip-version-check",
-                    "--no-deps",
-                    "--no-compile",
+                    "--ignore-installed",
+                    "-c",
+                    str(CONSTRAINTS),
                     "--target",
                     str(installed_target),
-                    str(wheel),
+                    f"{wheel}[test]",
                 ],
                 cwd=run_root,
             )
@@ -256,6 +271,23 @@ def main(argv: list[str] | None = None) -> int:
             if wheel is not None
             else subprocess.CompletedProcess([], 1, "", "no wheel to test")
         )
+        protocol_tests = (
+            _run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    str(PROTOCOL_TEST),
+                    "-q",
+                    "-p",
+                    "no:cacheprovider",
+                ],
+                cwd=run_root,
+                environment=environment,
+            )
+            if install.returncode == 0
+            else subprocess.CompletedProcess([], 1, "", "wheel install failed")
+        )
         try:
             matrix_artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
             artifact_error = None
@@ -282,6 +314,17 @@ def main(argv: list[str] | None = None) -> int:
             "sibling_checks",
             {"skills_absent": False, "agent_absent": False},
         )
+        dependency_versions = probe_data.get("dependency_versions", {})
+        dependency_versions_passed = all(
+            dependency_versions.get(name) == version
+            for name, version in EXPECTED_DEPENDENCY_VERSIONS.items()
+        )
+        backtrader_provenance = probe_data.get("backtrader_provenance", {})
+        backtrader_provenance_passed = (
+            isinstance(backtrader_provenance, dict)
+            and backtrader_provenance.get("trusted") is True
+            and backtrader_provenance.get("repository") == EXPECTED_BACKTRADER_REPOSITORY
+        )
         isolation_passed = (
             not args.require_no_skills or sibling_checks.get("skills_absent") is True
         ) and (not args.require_no_agent or sibling_checks.get("agent_absent") is True)
@@ -307,6 +350,9 @@ def main(argv: list[str] | None = None) -> int:
                 and matrix_passed
                 and isolation_passed
                 and wheel_tests.returncode == 0
+                and protocol_tests.returncode == 0
+                and dependency_versions_passed
+                and backtrader_provenance_passed
                 and independence.get("status") == "passed"
             )
             else "failed"
@@ -325,6 +371,11 @@ def main(argv: list[str] | None = None) -> int:
                 "install": _tail(install),
                 "probe": _tail(probe),
                 "wheel_tests": _tail(wheel_tests),
+                "protocol_tests": _tail(protocol_tests),
+                "dependency_versions": dependency_versions,
+                "dependency_versions_passed": dependency_versions_passed,
+                "backtrader_provenance": backtrader_provenance,
+                "backtrader_provenance_passed": backtrader_provenance_passed,
             },
             "matrix": {
                 "archetypes": 7,

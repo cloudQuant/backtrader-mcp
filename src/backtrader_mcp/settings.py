@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .backtrader_runtime import inspect_installed_backtrader
 from .errors import InvalidRequest
 
 
@@ -75,11 +76,18 @@ class Settings:
                 str(Path.home() / ".local" / "share" / "backtrader-mcp"),
             )
         ).expanduser()
+        raw_runtimes = os.environ.get("BACKTRADER_MCP_RUNTIMES")
+        runtimes = _root_map(raw_runtimes)
+        if raw_runtimes is None:
+            installed = inspect_installed_backtrader()
+            installed_root = installed["root"]
+            if installed["trusted"] and isinstance(installed_root, str):
+                runtimes = {"default": Path(installed_root).resolve(strict=False)}
         return cls(
             state_root=state.resolve(strict=False),
             source_roots=_root_map(os.environ.get("BACKTRADER_MCP_SOURCE_ROOTS")),
             target_roots=_root_map(os.environ.get("BACKTRADER_MCP_TARGET_ROOTS")),
-            runtimes=_root_map(os.environ.get("BACKTRADER_MCP_RUNTIMES")),
+            runtimes=runtimes,
             max_dataset_bytes=_positive_int(
                 "BACKTRADER_MCP_MAX_DATASET_BYTES",
                 64 * 1024 * 1024,

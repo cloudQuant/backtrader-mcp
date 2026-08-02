@@ -8,6 +8,7 @@ from typing import Any
 
 from mcp.server import MCPServer
 
+from . import __version__
 from .doctor import doctor_report
 from .service import BacktraderMCPService
 from .settings import Settings
@@ -27,7 +28,7 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         name="backtrader-mcp",
         title="Backtrader MCP",
         description="Local-first, reviewable Backtrader strategy development",
-        version="0.2.0",
+        version=__version__,
         instructions=(
             "Use immutable dataset IDs and private drafts. Validation tokens bind exact "
             "content. Applying changes and starting runs require distinct approvals created "
@@ -321,7 +322,8 @@ def create_server(settings: Settings | None = None) -> MCPServer:
             raise ValueError("unknown contract schema")
         return (
             files("backtrader_mcp")
-            .joinpath("schemas", f"{schema_name}.schema.json")
+            .joinpath("schemas")
+            .joinpath(f"{schema_name}.schema.json")
             .read_text(encoding="utf-8")
         )
 

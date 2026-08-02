@@ -4,7 +4,7 @@ import pytest
 from conftest import canonical_spec
 
 from backtrader_mcp.contracts import ARCHETYPES, SCAFFOLD_PROFILES
-from backtrader_mcp.errors import Conflict, Forbidden
+from backtrader_mcp.errors import Conflict, Forbidden, InvalidRequest
 from backtrader_mcp.validation import validate_sources
 
 
@@ -23,8 +23,106 @@ def test_all_fourteen_scaffolds_are_canonical_and_validate(registered_dataset):
             assert validation["report"]["schema_version"] == "validation-report-v1"
 
 
+def test_draft_validation_enforces_declared_strategy_imports(registered_dataset):
+    service, dataset = registered_dataset
+    restricted_spec = canonical_spec(dataset["dataset_id"], "single_data_indicator")
+    restricted_spec["allowed_imports"] = ["backtrader"]
+    restricted = service.create_strategy_draft(restricted_spec)
+    restricted_snapshot = service.get_strategy_draft(restricted["draft_id"])
+    restricted_source = "import math\n" + restricted_snapshot["files"]["strategy.py"]
+    restricted_update = service.update_strategy_draft(
+        restricted["draft_id"],
+        "strategy.py",
+        restricted_source,
+        restricted_snapshot["revision"],
+        restricted_snapshot["manifest"]["strategy.py"],
+    )
+    rejected = service.validate_strategy_draft(
+        restricted["draft_id"], restricted_update["revision"]
+    )
+    assert rejected["report"]["status"] == "failed"
+    assert any(item["code"] == "blocked_import" for item in rejected["report"]["diagnostics"])
+
+    permitted_spec = canonical_spec(dataset["dataset_id"], "single_data_indicator")
+    permitted_spec["allowed_imports"] = ["backtrader", "math"]
+    permitted = service.create_strategy_draft(permitted_spec)
+    permitted_snapshot = service.get_strategy_draft(permitted["draft_id"])
+    permitted_source = "import math\n" + permitted_snapshot["files"]["strategy.py"]
+    permitted_update = service.update_strategy_draft(
+        permitted["draft_id"],
+        "strategy.py",
+        permitted_source,
+        permitted_snapshot["revision"],
+        permitted_snapshot["manifest"]["strategy.py"],
+    )
+    accepted = service.validate_strategy_draft(permitted["draft_id"], permitted_update["revision"])
+    assert accepted["report"]["status"] == "passed", accepted["report"]
+    assert accepted["report"]["evidence"]["allowed_strategy_imports"] == [
+        "backtrader",
+        "math",
+    ]
+
+
+def test_run_profile_must_fit_declared_strategy_modes(registered_dataset):
+    service, dataset = registered_dataset
+    spec = canonical_spec(dataset["dataset_id"], "single_data_indicator")
+    spec["run_modes"] = ["runonce"]
+    draft = service.create_strategy_draft(spec)
+    validation = service.validate_strategy_draft(draft["draft_id"], draft["revision"])
+    before = len(service.state.list("run_plan"))
+
+    with pytest.raises(InvalidRequest, match="runnext"):
+        service.prepare_strategy_run(
+            draft["draft_id"],
+            validation["validation_token"],
+            dataset["dataset_id"],
+            "default",
+            20,
+            "fixed_tests",
+            "prepare-declared-mode-reject",
+        )
+
+    assert len(service.state.list("run_plan")) == before
+    plan = service.prepare_strategy_run(
+        draft["draft_id"],
+        validation["validation_token"],
+        dataset["dataset_id"],
+        "default",
+        20,
+        "runonce",
+        "prepare-declared-mode-accept",
+    )
+    assert plan["frozen_inputs"]["run_modes"] == ["runonce"]
+    assert plan["frozen_inputs"]["execution_modes"] == ["runonce"]
+
+
+def test_prepare_run_rejects_a_runtime_outside_cloudquant_backtrader(registered_dataset, tmp_path):
+    service, dataset = registered_dataset
+    runtime = tmp_path / "untrusted-runtime" / "backtrader"
+    runtime.mkdir(parents=True)
+    (runtime / "__init__.py").write_text("__version__ = 'test'\n", encoding="utf-8")
+    (runtime / "version.py").write_text("__version__ = 'test'\n", encoding="utf-8")
+    service.settings.runtimes["untrusted"] = runtime.parent
+    spec = canonical_spec(dataset["dataset_id"], "single_data_indicator")
+    draft = service.create_strategy_draft(spec)
+    validation = service.validate_strategy_draft(draft["draft_id"], draft["revision"])
+
+    with pytest.raises(InvalidRequest, match="cloudQuant/backtrader"):
+        service.prepare_strategy_run(
+            draft["draft_id"],
+            validation["validation_token"],
+            dataset["dataset_id"],
+            "untrusted",
+            20,
+            "fixed_tests",
+            "prepare-untrusted-runtime",
+        )
+
+
 def test_validator_is_object_class_specific_and_blocks_execution():
-    report = validate_sources({"objects.py": """
+    report = validate_sources(
+        {
+            "objects.py": """
 import backtrader as bt
 
 class Direct(bt.Strategy):
@@ -35,7 +133,9 @@ class Cooperative(bt.Indicator):
     lines = ("value",)
     def __init__(self):
         self.lines.value = self.data
-"""})
+"""
+        }
+    )
     assert any(
         item["class_name"] == "Direct" and item["category"] == "strategy"
         for item in report["evidence"]["classifications"]
@@ -96,7 +196,7 @@ class Cooperative(bt.Indicator):
         ),
         (
             "run.py",
-            "import os\n" "os.environ['BACKTRADER_MCP_DATASETS_JSON'] = '{}'\n",
+            "import os\nos.environ['BACKTRADER_MCP_DATASETS_JSON'] = '{}'\n",
         ),
         (
             "run.py",
@@ -112,7 +212,7 @@ class Cooperative(bt.Indicator):
         ),
         (
             "run.py",
-            "import os\n" "os.environ._data[b'BACKTRADER_MCP_DATASETS_JSON'] = b'{}'\n",
+            "import os\nos.environ._data[b'BACKTRADER_MCP_DATASETS_JSON'] = b'{}'\n",
         ),
         (
             "run.py",

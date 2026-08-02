@@ -4,15 +4,16 @@ build-backend = "hatchling.build"
 
 [project]
 name = "backtrader-mcp"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Local-first MCP server for safe, reproducible Backtrader strategy development"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [{name = "cloudQuant"}]
 dependencies = [
-  "mcp>=2.0.0,<3",
+  "mcp>=2.0.0,<2.1",
   "pandas>=2.0,<3",
+  "backtrader @ git+https://github.com/cloudQuant/backtrader.git@3c967ed61be184c0099ba5bef55d4bed09ad0b4a",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +27,12 @@ test = [
 
 [project.scripts]
 backtrader-mcp = "backtrader_mcp.cli:main"
+
+[tool.hatch.version]
+path = "src/backtrader_mcp/__init__.py"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/backtrader_mcp"]
@@ -51,9 +58,8 @@ omit = [
 ]
 
 [tool.coverage.report]
-# Current branch-coverage baseline is ~78%. This gate catches regressions
-# below that; raise to 80 once Phase D test additions land.
-fail_under = 75
+# Iteration 004 raised the exercised branch-coverage baseline above this gate.
+fail_under = 80
 show_missing = true
 exclude_lines = [
   "pragma: no cover",
@@ -69,10 +75,6 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
 ignore = ["E501"]
-
-[tool.black]
-line-length = 100
-target-version = ["py310"]
 
 [tool.mypy]
 python_version = "3.10"

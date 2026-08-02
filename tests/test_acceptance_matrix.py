@@ -25,6 +25,8 @@ CELL_FORMATS = {
     "order_risk": ("pandas", "mt5_csv"),
     "precomputed_ml": ("pandas_custom_lines", "pandas_custom_lines"),
 }
+ACCEPTANCE_RUN_TIMEOUT_SECONDS = 60
+ACCEPTANCE_STATUS_TIMEOUT_SECONDS = ACCEPTANCE_RUN_TIMEOUT_SECONDS + 15
 
 
 def _execution_environment() -> dict[str, Any]:
@@ -51,7 +53,11 @@ def _execution_environment() -> dict[str, Any]:
     }
 
 
-def _wait(service: Any, job_id: str, timeout: float = 25.0) -> dict[str, Any]:
+def _wait(
+    service: Any,
+    job_id: str,
+    timeout: float = ACCEPTANCE_STATUS_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         status = service.get_run_status(job_id)
@@ -326,7 +332,7 @@ def _run_cell(
         validation["validation_token"],
         dataset["dataset_id"],
         "default",
-        25,
+        ACCEPTANCE_RUN_TIMEOUT_SECONDS,
         "fixed_tests",
         f"prepare-run-{cell_id}",
     )

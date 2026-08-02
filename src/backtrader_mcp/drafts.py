@@ -74,7 +74,9 @@ class DraftService:
                     "role": (
                         "strategy_spec"
                         if path.endswith(".json")
-                        else "run_harness" if path == "run.py" else "strategy_source"
+                        else "run_harness"
+                        if path == "run.py"
+                        else "strategy_source"
                     ),
                     "bytes": len(files[path].encode("utf-8")),
                     "sha256": digest,
@@ -252,7 +254,10 @@ class DraftService:
             draft = self.get_draft(draft_id)
             if draft["revision"] != expected_revision:
                 raise Conflict("draft revision is stale")
-            static_report = validate_sources(draft["files"])
+            static_report = validate_sources(
+                draft["files"],
+                allowed_strategy_imports=set(draft["strategy_spec"]["allowed_imports"]),
+            )
             validation_id = f"validation_{uuid.uuid4().hex}"
             report_core = {
                 "schema_version": "validation-report-v1",

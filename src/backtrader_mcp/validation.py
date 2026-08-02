@@ -238,11 +238,11 @@ class _ScopeFactsBuilder(ast.NodeVisitor):
             facts.bind(arguments.vararg.arg)
         if arguments.kwarg is not None:
             facts.bind(arguments.kwarg.arg)
-        body = (
-            node.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else [node.body]
-        )
-        for statement in body:
-            self.visit(statement)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for statement in node.body:
+                self.visit(statement)
+        else:
+            self.visit(node.body)
         self._stack.pop()
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -279,16 +279,19 @@ class _ScopeFactsBuilder(ast.NodeVisitor):
         for target in node.targets:
             self._bind_target(target)
 
-    def visit_For(self, node: ast.For) -> None:
+    def _visit_for(self, node: ast.For | ast.AsyncFor) -> None:
         self.visit(node.iter)
         self._bind_target(node.target)
         for statement in [*node.body, *node.orelse]:
             self.visit(statement)
 
-    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
-        self.visit_For(node)
+    def visit_For(self, node: ast.For) -> None:
+        self._visit_for(node)
 
-    def visit_With(self, node: ast.With) -> None:
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self._visit_for(node)
+
+    def _visit_with(self, node: ast.With | ast.AsyncWith) -> None:
         for item in node.items:
             self.visit(item.context_expr)
             if item.optional_vars is not None:
@@ -296,8 +299,11 @@ class _ScopeFactsBuilder(ast.NodeVisitor):
         for statement in node.body:
             self.visit(statement)
 
+    def visit_With(self, node: ast.With) -> None:
+        self._visit_with(node)
+
     def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
-        self.visit_With(node)
+        self._visit_with(node)
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
         if node.type is not None:
@@ -421,12 +427,21 @@ def _is_super_init(call: ast.Call) -> bool:
 
 
 class StaticValidator(ast.NodeVisitor):
-    def __init__(self, path: str, tree: ast.Module):
+    def __init__(
+        self,
+        path: str,
+        tree: ast.Module,
+        allowed_strategy_imports: set[str] | None = None,
+    ):
         self.path = path
         self.findings: list[Finding] = []
         self.classifications: list[dict[str, str]] = []
         filename = PurePosixPath(path).name
         self.harness = filename == "run.py" or filename.startswith("test_")
+        requested_imports = (
+            STRATEGY_IMPORTS if allowed_strategy_imports is None else allowed_strategy_imports
+        )
+        self.strategy_imports = frozenset(requested_imports & STRATEGY_IMPORTS)
         self._facts_by_node = _build_scope_facts(tree)
         module_scope = _BindingScope("module", facts=self._facts_by_node[id(tree)])
         self._scope_stack = [module_scope]
@@ -518,7 +533,9 @@ class StaticValidator(ast.NodeVisitor):
         )
 
     def visit_Import(self, node: ast.Import) -> None:
-        allowed = HARNESS_IMPORTS if self.harness else STRATEGY_IMPORTS
+        allowed = self.strategy_imports
+        if self.harness:
+            allowed |= HARNESS_IMPORTS - STRATEGY_IMPORTS
         for alias in node.names:
             local_name = alias.asname or alias.name.split(".", 1)[0]
             self._invalidate_binding(local_name)
@@ -930,9 +947,17 @@ class StaticValidator(ast.NodeVisitor):
         self._pop_scope()
 
 
-def validate_sources(files: dict[str, str]) -> dict[str, Any]:
+def validate_sources(
+    files: dict[str, str],
+    *,
+    allowed_strategy_imports: set[str] | None = None,
+) -> dict[str, Any]:
     findings: list[Finding] = []
     classifications: list[dict[str, str]] = []
+    requested_imports = (
+        STRATEGY_IMPORTS if allowed_strategy_imports is None else allowed_strategy_imports
+    )
+    effective_imports = sorted(requested_imports & STRATEGY_IMPORTS)
     for path, content in sorted(files.items()):
         if not path.endswith(".py"):
             continue
@@ -950,7 +975,7 @@ def validate_sources(files: dict[str, str]) -> dict[str, Any]:
                 )
             )
             continue
-        validator = StaticValidator(path, tree)
+        validator = StaticValidator(path, tree, allowed_strategy_imports)
         validator.visit(tree)
         findings.extend(validator.findings)
         classifications.extend(
@@ -969,5 +994,6 @@ def validate_sources(files: dict[str, str]) -> dict[str, Any]:
                 "literal_absolute_paths",
                 "object_class_initialization",
             ],
+            "allowed_strategy_imports": effective_imports,
         },
     }

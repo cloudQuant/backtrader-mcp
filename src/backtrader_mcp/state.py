@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 import sqlite3
 import uuid
@@ -100,7 +101,7 @@ class StateStore:
             ).fetchall()
         return [json.loads(row["payload_json"]) for row in rows]
 
-    def list_approvals(self) -> list[dict[str, Any]]:
+    def list_approvals(self) -> builtins.list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
                 "SELECT approval_id, subject_type, subject_id, created_at, expires_at, used_at "
@@ -108,7 +109,7 @@ class StateStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def list_audit(self, limit: int = 100) -> list[dict[str, Any]]:
+    def list_audit(self, limit: int = 100) -> builtins.list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
                 "SELECT seq, at, event, subject_id, details_json FROM audit "

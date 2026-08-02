@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
 import jsonschema
 import pytest
+
+from backtrader_mcp.contracts import StrategySpec
+from backtrader_mcp.scaffold import scaffold_files
 
 SCHEMA_DIR = Path(__file__).resolve().parents[1] / "src" / "backtrader_mcp" / "schemas"
 
@@ -74,6 +78,83 @@ def test_strategy_spec_bad_slug_rejected():
     spec["slug"] = "Not Kebab Case!"
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(spec, _load("strategy-spec"))
+
+
+def test_strategy_spec_published_fields_round_trip_hash_and_scaffold():
+    baseline = _valid_strategy_spec()
+    baseline["archetype"] = "multi_asset_allocation"
+    baseline["feeds"] = [
+        {
+            "name": "primary",
+            "dataset_feed": "secondary",
+            "role": "execution",
+            "symbol": "PRIMARY",
+            "timeframe": "days",
+            "lines": ["close"],
+        },
+        {
+            "name": "secondary",
+            "dataset_feed": "primary",
+            "role": "signal",
+            "symbol": "SECONDARY",
+            "timeframe": "days",
+            "lines": ["close"],
+        },
+    ]
+    enriched = copy.deepcopy(baseline)
+    enriched.update(
+        {
+            "slippage": 0.1,
+            "ir": {"intent": {"kind": "allocation"}},
+            "extensions": {"review": {"owner": "research"}},
+            "non_goals": ["live trading"],
+            "undecided": ["rebalance frequency"],
+        }
+    )
+
+    parsed = StrategySpec.parse(enriched)
+    serialized = parsed.as_dict()
+    jsonschema.validate(serialized, _load("strategy-spec"))
+    assert serialized["slippage"] == 0.1
+    assert serialized["ir"] == enriched["ir"]
+    assert serialized["extensions"] == enriched["extensions"]
+    assert serialized["non_goals"] == enriched["non_goals"]
+    assert serialized["undecided"] == enriched["undecided"]
+    assert [feed["dataset_feed"] for feed in serialized["feeds"]] == [
+        "secondary",
+        "primary",
+    ]
+    assert StrategySpec.parse(serialized).as_dict() == serialized
+
+    baseline_hash = StrategySpec.parse(baseline).spec_hash
+    assert parsed.spec_hash != baseline_hash
+    for field, value in (
+        ("slippage", 0.2),
+        ("ir", {"intent": {"kind": "different"}}),
+        ("extensions", {"review": {"owner": "different"}}),
+        ("non_goals", ["network transport"]),
+        ("undecided", ["data vendor"]),
+    ):
+        changed = copy.deepcopy(enriched)
+        changed[field] = value
+        assert StrategySpec.parse(changed).spec_hash != parsed.spec_hash
+    changed_mapping = copy.deepcopy(enriched)
+    changed_mapping["feeds"][0]["dataset_feed"] = "primary"
+    assert StrategySpec.parse(changed_mapping).spec_hash != parsed.spec_hash
+
+    runner = scaffold_files(parsed, "python_bundle")["run.py"]
+    assert "slippage=0.1" in runner
+    assert "'dataset_feed': 'secondary'" in runner
+    assert "'dataset_feed': 'primary'" in runner
+
+
+def test_multi_indicator_scaffold_uses_safe_rsi():
+    spec = _valid_strategy_spec()
+    spec["archetype"] = "multi_indicator_system"
+
+    strategy = scaffold_files(StrategySpec.parse(spec), "single_test")["test_strategy.py"]
+
+    assert "bt.indicators.RSI_Safe" in strategy
 
 
 def _valid_run_result() -> dict:
