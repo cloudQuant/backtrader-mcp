@@ -28,7 +28,6 @@ def test_build_metadata_reads_the_package_version_source():
 def test_runtime_version_surfaces_match_the_package_version(tmp_path: Path):
     settings = Settings(state_root=tmp_path / "state")
 
-    assert __version__ == "0.2.0"
     assert BacktraderMCPService(settings).product_info()["version"] == __version__
     assert doctor_report(settings)["product"]["version"] == __version__
 

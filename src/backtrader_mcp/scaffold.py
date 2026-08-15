@@ -17,6 +17,7 @@ def _params(spec: StrategySpec) -> str:
         "risk_fraction": 0.02,
     }
     defaults.update(spec.parameter_defaults)
+    defaults.setdefault("record_fills", False)
     rendered = ",\n        ".join(f"{key}={value!r}" for key, value in sorted(defaults.items()))
     return f"dict(\n        {rendered},\n    )"
 
@@ -113,12 +114,24 @@ def _strategy_body(spec: StrategySpec) -> str:
 """,
         "precomputed_ml": precomputed_body,
     }
+    notify = (
+        "\n\n"
+        "    def notify_order(self, order):\n"
+        "        if order.status == order.Completed and self.p.record_fills:\n"
+        "            self.log(f'fill {order.executed.size} @ {order.executed.price:.6f}')\n"
+        "        if order.status in (order.Canceled, order.Margin, order.Rejected):\n"
+        "            self.log(f'order {order.status.name.lower()} {order.data._name}')\n"
+    )
     return (
         "import backtrader as bt\n\n\n"
         f"class {class_name}(bt.Strategy):\n"
         f"    params = {_params(spec)}\n\n"
+        "    def log(self, text):\n"
+        "        if self.p.record_fills:\n"
+        "            print(f'{self.datetime.date()} {text}')\n"
         "    def __init__(self):\n"
         f"{bodies[spec.archetype].rstrip()}\n"
+        f"{notify}\n"
     )
 
 

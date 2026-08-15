@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import csv
 import io
 import os
@@ -48,8 +49,13 @@ TIMEFRAMES = {
 }
 
 
-def _validate_bar(row: dict[str, str], index: int) -> None:
-    """Reject non-positive prices and inconsistent OHLC bars at registration."""
+def _validate_bar(row: dict[str, str], index: int, allow_non_positive: bool = False) -> None:
+    """Reject non-positive prices and inconsistent OHLC bars at registration.
+
+    ``allow_non_positive`` is the explicit opt-out for markets where zero or
+    negative prices are legitimate (settled options, 2020-style negative
+    futures); OHLC consistency is still enforced.
+    """
     try:
         open_price = float(row["open"])
         high = float(row["high"])
@@ -57,7 +63,7 @@ def _validate_bar(row: dict[str, str], index: int) -> None:
         close = float(row["close"])
     except (KeyError, ValueError):
         return  # non-required columns are validated elsewhere
-    if min(open_price, high, low, close) <= 0:
+    if not allow_non_positive and min(open_price, high, low, close) <= 0:
         raise InvalidRequest(f"row {index} has non-positive OHLC prices")
     if high < low or high < max(open_price, close) or low > min(open_price, close):
         raise InvalidRequest(f"row {index} has inconsistent OHLC prices")
@@ -301,7 +307,11 @@ class DatasetService:
                         raise InvalidRequest(
                             "datetime values must be unique and strictly increasing"
                         )
-                    _validate_bar(row, index)
+                    _validate_bar(
+                        row,
+                        index,
+                        allow_non_positive=options.get("allow_non_positive_prices", False),
+                    )
                     previous_datetime = row["datetime"]
                     writer.writerow(row)
                     row_count += 1
@@ -400,12 +410,14 @@ class DatasetService:
         if (
             not isinstance(alignment, dict)
             or set(alignment) != {"mode", "minimum_overlap"}
-            or alignment["mode"] not in {"intersection", "left", "explicit_asof"}
+            or alignment["mode"] != "intersection"
             or not isinstance(alignment["minimum_overlap"], (int, float))
             or isinstance(alignment["minimum_overlap"], bool)
             or not 0 <= alignment["minimum_overlap"] <= 1
         ):
-            raise InvalidRequest("DataSpec alignment is invalid")
+            raise InvalidRequest(
+                "DataSpec alignment is invalid; only mode=intersection is implemented"
+            )
         transforms = data_spec.get("transforms")
         if not isinstance(transforms, list):
             raise InvalidRequest("DataSpec transforms must be an array")
@@ -483,6 +495,15 @@ class DatasetService:
                 "years",
             }:
                 raise InvalidRequest("Yahoo CSV feeds support daily-or-coarser bars")
+            if feed["format"] == "mt5_csv" and timeframe in {
+                "ticks",
+                "microseconds",
+                "seconds",
+            }:
+                raise InvalidRequest(
+                    "MT5 CSV feeds only support minute-or-coarser bars; the adapter "
+                    "would silently truncate sub-minute precision"
+                )
             if not isinstance(feed["symbol"], str) or not feed["symbol"]:
                 raise InvalidRequest("DataSpec feed symbol is invalid")
             if not isinstance(feed["timezone"], str) or not feed["timezone"]:
@@ -936,6 +957,14 @@ class DatasetService:
             )
         if len(content) > self.settings.max_dataset_bytes:
             raise InvalidRequest(f"derived dataset exceeds {self.settings.max_dataset_bytes} bytes")
+        derived_descriptor = None
+        if output is not None:
+            derived_descriptor = {
+                "name": "primary",
+                "input_format": "pandas_custom_lines",
+                "custom_lines": [output],
+                "lines": [*BASE_COLUMNS, output],
+            }
         return self._store(
             content,
             columns,
@@ -949,6 +978,7 @@ class DatasetService:
                 "transform_profile_id": transform_profile_id,
                 "typed_params": typed_params,
             },
+            feed_descriptor=derived_descriptor,
         )
 
     def _stream_derived(
@@ -967,7 +997,7 @@ class DatasetService:
         temp_path = Path(temp_name)
         row_count = 0
         previous_value: float | None = None
-        window: list[float] = []
+        window: collections.deque[float] = collections.deque()
         rolling = 0.0
         value_column = typed_params.get("column", "close") if output is not None else None
         try:
@@ -991,21 +1021,22 @@ class DatasetService:
                                 f"row {index} column {value_column!r} is not numeric"
                             ) from exc
                         if transform_profile_id == "returns":
-                            derived = (
-                                format((value / previous_value) - 1.0, ".17g")
-                                if previous_value is not None and previous_value != 0
-                                else ""
-                            )
+                            if previous_value is None or previous_value == 0:
+                                # Warmup row (first row or zero base): drop it so
+                                # the derived column contains only defined values.
+                                previous_value = value
+                                continue
+                            derived = format((value / previous_value) - 1.0, ".17g")
                             previous_value = value
                         else:
                             assert period is not None
                             window.append(value)
                             rolling += value
                             if len(window) > period:
-                                rolling -= window.pop(0)
-                            derived = (
-                                format(rolling / period, ".17g") if len(window) == period else ""
-                            )
+                                rolling -= window.popleft()
+                            if len(window) < period:
+                                continue  # warmup row: drop
+                            derived = format(rolling / period, ".17g")
                         row[output] = derived
                     writer.writerow(row)
                     row_count += 1

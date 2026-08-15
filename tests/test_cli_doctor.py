@@ -116,6 +116,7 @@ def test_doctor_cli_reports_actual_runtime_without_mutating_state(monkeypatch, t
     }
     assert report["capabilities"]["run_profiles"] == [
         "fixed_tests",
+        "parameter_sweep",
         "runnext",
         "runonce",
         "runonce_runnext_compare",

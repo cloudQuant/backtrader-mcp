@@ -17,6 +17,7 @@ SOURCE_SRC = (PRODUCT_ROOT / "src").resolve()
 FIXED_TEST = PRODUCT_ROOT / "tests" / "test_acceptance_matrix.py"
 FIXED_TEST_NODE = f"{FIXED_TEST}::test_structured_fourteen_cell_acceptance_matrix"
 PROTOCOL_TEST = PRODUCT_ROOT / "tests" / "test_protocol_v2.py"
+STDIO_TRANSPORT_TEST = PRODUCT_ROOT / "tests" / "test_stdio_transport.py"
 CONSTRAINTS = PRODUCT_ROOT / "constraints" / "requirements-v2.txt"
 EXPECTED_DEPENDENCY_VERSIONS = {
     "backtrader": "1.3.0",
@@ -278,6 +279,7 @@ def main(argv: list[str] | None = None) -> int:
                     "-m",
                     "pytest",
                     str(PROTOCOL_TEST),
+                    str(STDIO_TRANSPORT_TEST),
                     "-q",
                     "-p",
                     "no:cacheprovider",
