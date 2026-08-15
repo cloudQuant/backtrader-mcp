@@ -255,6 +255,67 @@ def _add_feed(
     raise ValueError("unknown bar operation")
 
 
+_EXTRA_ANALYZER_FACTORIES = {
+    "sqn": ("backtrader.analyzers.sqn", "SQN"),
+    "calmar": ("backtrader.analyzers.calmar", "Calmar"),
+    "vwr": ("backtrader.analyzers.vwr", "VWR"),
+    "timereturn": ("backtrader.analyzers.timereturn", "TimeReturn"),
+}
+
+
+def _apply_seed() -> None:
+    raw = os.environ.get("BACKTRADER_MCP_SEED")
+    if not raw:
+        return
+    try:
+        seed = int(raw)
+    except ValueError:
+        return
+    import random
+
+    random.seed(seed)
+    try:
+        import numpy
+
+        numpy.random.seed(seed)
+    except ImportError:
+        pass
+
+
+def _add_extra_analyzers(cerebro: Any) -> list[str]:
+    raw = os.environ.get("BACKTRADER_MCP_ANALYZERS", "[]")
+    try:
+        names = json.loads(raw)
+    except json.JSONDecodeError:
+        names = []
+    for name in names:
+        factory = _EXTRA_ANALYZER_FACTORIES.get(name)
+        if factory is None:
+            continue
+        module_name, class_name = factory
+        module = __import__(module_name, fromlist=[class_name])
+        analyzer_class = getattr(module, class_name)
+        cerebro.addanalyzer(analyzer_class, _name=f"extra_{name}")
+    return [name for name in names if name in _EXTRA_ANALYZER_FACTORIES]
+
+
+def _extra_analyzer_metrics(strategy: Any, names: list[str]) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    for name in names:
+        analyzer = getattr(strategy.analyzers, f"extra_{name}", None)
+        if analyzer is None:
+            continue
+        analysis = analyzer.get_analysis()
+        if name == "timereturn":
+            values = analysis.values() if hasattr(analysis, "values") else []
+            metrics["time_return"] = float(list(values)[-1]) if values else None
+        elif isinstance(analysis, dict) and analysis:
+            metric_name = {"sqn": "sqn", "calmar": "calmar", "vwr": "vwr"}[name]
+            value = analysis.get(metric_name)
+            metrics[metric_name] = _finite_or_none(value)
+    return metrics
+
+
 def _count(trades: Any, section: str) -> int:
     value = trades.get(section, {}).get("total")
     return int(value) if isinstance(value, (int, float)) else 0
@@ -278,6 +339,7 @@ def run_materialized_backtest(
     """Run a generated strategy using only worker-verified materialized inputs."""
 
     _validate_frozen_paths(feed_configs)
+    _apply_seed()
     configs = {config["name"]: config for config in feed_configs}
     cerebro = bt.Cerebro(stdstats=False)
     cerebro.broker.setcash(starting_cash)
@@ -310,6 +372,7 @@ def run_materialized_backtest(
         cerebro.addanalyzer(Returns, _name="returns")
         cerebro.addanalyzer(DrawDown, _name="drawdown")
         cerebro.addanalyzer(TradeAnalyzer, _name="trades")
+        extra_analyzer_names = _add_extra_analyzers(cerebro)
         strategies = cerebro.run(runonce=run_mode == "runonce")
         strategy = strategies[0]
         trades = strategy.analyzers.trades.get_analysis()
@@ -336,7 +399,10 @@ def run_materialized_backtest(
             "schema_version": "run-result-v1",
             "run_mode": run_mode,
             "archetype": archetype,
-            "metrics": metrics,
+            "metrics": {
+                **metrics,
+                **_extra_analyzer_metrics(strategy, extra_analyzer_names),
+            },
             "feed_runtime": runtime_evidence,
         }
     finally:

@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   values.
 - Tool annotations (readOnlyHint/destructiveHint/idempotentHint/openWorldHint/
   title) across the 29-tool surface.
+- Quant correctness (iteration 012): comparison tolerances load from
+  the packaged comparison-profile-v1 policy (metric_overrides now apply),
+  `precomputed_ml` fails fast without a declared custom feature line, an
+  allowlisted analyzer extension (sqn/calmar/vwr/timereturn) flows typed
+  extra metrics into results, run manifests record the runtime git commit
+  and pandas/numpy versions in the environment fingerprint, registration
+  rejects non-positive or inconsistent OHLC bars with row numbers, and an
+  optional canonical `seed` freezes into the run manifest and seeds the
+  candidate process.
 - Test universe and release engineering (iteration 011): feed_runtime
   and the MCP server surface now count toward the coverage gate, a stdio
   subprocess E2E test exercises the production transport (initialize /

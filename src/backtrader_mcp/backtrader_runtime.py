@@ -21,6 +21,11 @@ CLOUDQUANT_BACKTRADER_REQUIREMENT = (
 )
 
 
+def runtime_git_commit(root: Path) -> str | None:
+    """Return the checked-out git HEAD of a runtime root, or None."""
+    return _git_value(root, "rev-parse", "HEAD")
+
+
 def _git_value(root: Path, *arguments: str) -> str | None:
     try:
         completed = subprocess.run(

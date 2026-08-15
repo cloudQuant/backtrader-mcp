@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .backtrader_runtime import require_cloudquant_runtime
+from .backtrader_runtime import require_cloudquant_runtime, runtime_git_commit
 from .data import DatasetService
 from .drafts import DraftService
 from .errors import Conflict, InvalidRequest, NotFound, sanitize_for_client
@@ -43,6 +43,15 @@ MAX_LOG_TAIL_BYTES = 25000
 WATCHDOG_INTERVAL_SECONDS = 2.0
 HEARTBEAT_STALE_SECONDS = 15.0
 WATCHDOG_DEADLINE_GRACE_SECONDS = 5.0
+
+
+def _dependency_version(name: str) -> str | None:
+    import importlib.metadata as _metadata
+
+    try:
+        return _metadata.version(name)
+    except _metadata.PackageNotFoundError:
+        return None
 
 
 def job_summary(job: dict[str, Any]) -> dict[str, Any]:
@@ -205,6 +214,11 @@ class JobService:
             },
             "runtime_id": runtime_id,
             "runtime_version_file_hash": file_hash(runtime / "backtrader" / "version.py"),
+            "runtime_commit": runtime_git_commit(runtime),
+            "seed": (verified["draft"]["strategy_spec"].get("seed")),
+            "analyzers": (
+                (verified["draft"]["strategy_spec"].get("extensions") or {}).get("analyzers") or []
+            ),
             "timeout_seconds": timeout_seconds,
             "run_profile_id": run_profile_id,
             "run_modes": declared_run_modes,
@@ -294,12 +308,15 @@ class JobService:
             "engine": {
                 "id": plan["runtime_id"],
                 "version_file_hash": plan["runtime_version_file_hash"],
+                "commit": plan.get("runtime_commit"),
             },
             "environment_hash": sha256_json(
                 {
                     "python": sys.version,
                     "runtime_id": plan["runtime_id"],
                     "runtime_version_file_hash": plan["runtime_version_file_hash"],
+                    "pandas": _dependency_version("pandas"),
+                    "numpy": _dependency_version("numpy"),
                 }
             ),
             "run_profile": {
@@ -307,6 +324,8 @@ class JobService:
                 "run_modes": plan["run_modes"],
                 "execution_modes": plan["execution_modes"],
                 "profile_id": plan["run_profile_id"],
+                "seed": plan.get("seed"),
+                "analyzers": plan.get("analyzers") or [],
             },
             "approval_id": approval_id,
         }
@@ -332,6 +351,8 @@ class JobService:
             "run_profile_id": plan["run_profile_id"],
             "execution_modes": plan["execution_modes"],
             "resource_limits": self.settings.resource_limits(),
+            "seed": plan.get("seed"),
+            "analyzers": plan.get("analyzers") or [],
             "worker_pid": None,
             "child_pid": None,
             "created_at": utc_now(),
@@ -405,6 +426,7 @@ class JobService:
                         for name, item in sorted(dataset["extensions"]["feed_objects"].items())
                     },
                     "runtime_version_file_hash": file_hash(runtime / "backtrader" / "version.py"),
+                    "runtime_commit": runtime_git_commit(runtime),
                 }
                 if any(plan[key] != value for key, value in current.items()):
                     raise Conflict("run inputs changed after prepare")
