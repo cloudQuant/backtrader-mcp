@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
 from conftest import canonical_spec
 
 import backtrader_mcp
@@ -389,6 +390,7 @@ def _run_cell(
     }
 
 
+@pytest.mark.acceptance
 def test_structured_fourteen_cell_acceptance_matrix(service_env):
     service, source_root, _ = service_env
     records: list[dict[str, Any]] = []

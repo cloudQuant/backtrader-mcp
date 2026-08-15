@@ -28,6 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   values.
 - Tool annotations (readOnlyHint/destructiveHint/idempotentHint/openWorldHint/
   title) across the 29-tool surface.
+- Test universe and release engineering (iteration 011): feed_runtime
+  and the MCP server surface now count toward the coverage gate, a stdio
+  subprocess E2E test exercises the production transport (initialize /
+  tools/list / doctor over raw JSON-RPC frames), `requires-python` is
+  capped below 3.14, hypothesis property tests lock token tamper rejection
+  and path confinement, CI test jobs skip the acceptance matrix while a
+  tag-triggered release job builds the wheel, runs clean acceptance, and
+  publishes the release, CHANGELOG/version and constraints/range
+  consistency checks replace hardcoded literals, and protocol tests skip
+  with an actionable message outside the verified mcp==2.0.0 target.
 - Trusted authorization and security hardening (iteration 010):
   approver OS identity recorded on approval audits, the README states the
   host assumption for human-vs-agent approval separation, signed tokens

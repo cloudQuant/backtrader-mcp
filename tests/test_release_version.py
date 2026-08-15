@@ -40,3 +40,42 @@ def test_mcp_server_reads_the_package_version_instead_of_a_literal():
 
     assert "from . import __version__" in server_source
     assert "version=__version__" in server_source
+
+
+def test_changelog_latest_release_matches_package_version():
+    """The most recent released CHANGELOG entry must equal __version__."""
+    changelog = (REPOSITORY_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    released = re.findall(r"(?m)^## \[([0-9]+\.[0-9]+\.[0-9]+)\]", changelog)
+    assert released, "CHANGELOG has no versioned release entries"
+    assert released[0] == __version__, (
+        f"CHANGELOG latest release {released[0]} != package version {__version__}"
+    )
+
+
+def test_requires_python_has_an_upper_bound():
+    project = _project_section()
+    match = re.search(r'requires-python\s*=\s*"([^"]+)"', project)
+    assert match is not None
+    assert match.group(1) == ">=3.10,<3.14"
+
+
+def test_constraints_fall_inside_pyproject_ranges():
+    """Every pinned constraint must satisfy the declared dependency range."""
+    pyproject = (REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    constraints = (REPOSITORY_ROOT / "constraints" / "requirements-v2.txt").read_text(
+        encoding="utf-8"
+    )
+    ranges = {
+        name: spec
+        for name, spec in re.findall(r'^"?([\w-]+)"?\s*=\s*\[?"?([^"\]]+)"?\]?', pyproject, re.M)
+        if name in {"mcp", "pandas"}
+    }
+    pins = dict(re.findall(r"(?m)^([\w-]+)==([0-9].*)$", constraints))
+    from packaging.specifiers import SpecifierSet
+    from packaging.version import Version
+
+    for name, spec in ranges.items():
+        assert name in pins, f"{name} missing from constraints"
+        assert SpecifierSet(spec.replace('"', "")).contains(Version(pins[name])), (
+            f"{name} pin {pins[name]} outside declared range {spec}"
+        )

@@ -40,7 +40,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -c constraints/requirements-v2.txt ".[test]"
       - name: Run tests with coverage
-        run: PYTHONPATH=src python -m pytest -q -p no:xdist
+        run: PYTHONPATH=src python -m pytest -q -p no:xdist -m "not acceptance"
       - name: Independence audit
         run: PYTHONPATH=src python -m backtrader_mcp audit-independence
 
@@ -80,3 +80,31 @@ jobs:
           name: backtrader-mcp-acceptance
           path: backtrader-mcp-acceptance.json
           if-no-files-found: warn
+
+  release:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Upgrade pip for clean-room acceptance
+        run: python -m pip install --upgrade pip
+      - name: Run clean-wheel acceptance
+        shell: bash
+        run: |
+          set -o pipefail
+          python scripts/run_acceptance.py --matrix all --require-no-skills --require-no-agent | tee backtrader-mcp-acceptance.json
+      - name: Build release wheel
+        run: |
+          python -m pip wheel --no-deps --wheel-dir dist .
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.whl
+            backtrader-mcp-acceptance.json
+          fail_on_unmatched_files: true
