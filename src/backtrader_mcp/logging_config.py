@@ -12,9 +12,25 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 _LOGGER_NAME = "backtrader_mcp"
 _CONFIGURED = False
+
+
+@contextmanager
+def timed(logger: logging.Logger, event: str, **fields: Any) -> Iterator[None]:
+    """Log a structured duration line around a slow product operation."""
+    start = time.monotonic()
+    try:
+        yield
+    finally:
+        duration_ms = (time.monotonic() - start) * 1000
+        details = " ".join(f"{key}={value!r}" for key, value in sorted(fields.items()))
+        suffix = f" {details}" if details else ""
+        logger.info("%s duration_ms=%.1f%s", event, duration_ms, suffix)
 
 
 def configure_logging() -> logging.Logger:

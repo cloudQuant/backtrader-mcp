@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 import json
 import sqlite3
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Callable
@@ -16,13 +17,21 @@ from .util import canonical_json, sha256_json, utc_now
 class StateStore:
     def __init__(self, state_root: Path):
         self.path = state_root / "state.sqlite3"
+        # One connection per thread, held for the store's lifetime. Each
+        # operation previously opened (and leaked) a fresh connection; caching
+        # removes both the handle leak and the ResourceWarning flood while the
+        # per-operation BEGIN IMMEDIATE/busy_timeout semantics stay unchanged.
+        self._local = threading.local()
         self._initialize()
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=30, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=30000")
+        connection = getattr(self._local, "connection", None)
+        if connection is None:
+            connection = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute("PRAGMA busy_timeout=30000")
+            self._local.connection = connection
         return connection
 
     def _initialize(self) -> None:
@@ -60,6 +69,10 @@ class StateStore:
                     event TEXT NOT NULL,
                     subject_id TEXT,
                     details_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS nonces (
+                    nonce TEXT PRIMARY KEY,
+                    used_at TEXT
                 );
                 """)
 
@@ -180,6 +193,95 @@ class StateStore:
     def checkpoint(self) -> None:
         with self.connect() as connection:
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    def replace_kind(self, kind: str, rows: builtins.list[dict[str, Any]]) -> int:
+        """Replace every object of one kind in a single transaction.
+
+        Used by catalog refresh: the whole kind is swapped atomically so
+        concurrent readers observe either the old or the new snapshot, and
+        entries whose source files disappeared stop appearing.
+        """
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM objects WHERE kind=?", (kind,))
+            connection.executemany(
+                "INSERT INTO objects(kind,id,payload_json,created_at,updated_at) VALUES(?,?,?,?,?)",
+                [(kind, row["id"], canonical_json(row), now, now) for row in rows],
+            )
+            connection.commit()
+        return len(rows)
+
+    def put_many(self, kind: str, rows: builtins.list[dict[str, Any]]) -> int:
+        """Upsert many rows of one kind in a single transaction."""
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.executemany(
+                "INSERT OR REPLACE INTO objects(kind,id,payload_json,created_at,updated_at) "
+                "VALUES(?,?,?,?,?)",
+                [(kind, row["id"], canonical_json(row), now, now) for row in rows],
+            )
+            connection.commit()
+        return len(rows)
+
+    def delete_many(self, kind: str, object_ids: builtins.list[str]) -> int:
+        """Delete many rows of one kind in a single transaction."""
+        if not object_ids:
+            return 0
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.executemany(
+                "DELETE FROM objects WHERE kind=? AND id=?", [(kind, item) for item in object_ids]
+            )
+            connection.commit()
+        return len(object_ids)
+
+    def replace_prefix(self, kind: str, prefix: str, rows: builtins.list[dict[str, Any]]) -> int:
+        """Atomically replace all rows of one kind whose id starts with ``prefix:``."""
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "DELETE FROM objects WHERE kind=? AND id LIKE ?", (kind, f"{prefix}:%")
+            )
+            connection.executemany(
+                "INSERT INTO objects(kind,id,payload_json,created_at,updated_at) VALUES(?,?,?,?,?)",
+                [(kind, row["id"], canonical_json(row), now, now) for row in rows],
+            )
+            connection.commit()
+        return len(rows)
+
+    def clean_approvals(self, before_iso: str) -> int:
+        """Delete approvals that were consumed or expired before a timestamp."""
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM approvals WHERE used_at < ? OR expires_at < ?",
+                (before_iso, before_iso),
+            )
+            return cursor.rowcount
+
+    def issue_nonce(self, nonce: str) -> None:
+        """Register a freshly generated token nonce (collision-safe insert)."""
+        try:
+            with self.connect() as connection:
+                connection.execute("INSERT INTO nonces(nonce,used_at) VALUES(?,NULL)", (nonce,))
+        except sqlite3.IntegrityError as exc:
+            raise Conflict(f"nonce already exists: {nonce}") from exc
+
+    def consume_nonce(self, nonce: str) -> bool:
+        """Atomically consume one nonce; False when absent or already used."""
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT used_at FROM nonces WHERE nonce=?", (nonce,)
+            ).fetchone()
+            if row is None or row["used_at"] is not None:
+                connection.rollback()
+                return False
+            connection.execute("UPDATE nonces SET used_at=? WHERE nonce=?", (utc_now(), nonce))
+            connection.commit()
+        return True
 
     def idempotent_get(
         self, scope: str, key: str, request: dict[str, Any]

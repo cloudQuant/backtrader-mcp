@@ -4,16 +4,26 @@ from __future__ import annotations
 
 import csv
 import io
+import os
+import re
+import tempfile
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
 from .errors import InvalidRequest, NotFound
+from .logging_config import get_logger, timed
 from .security import confined_path
 from .settings import Settings
 from .state import StateStore
-from .util import atomic_write, file_hash, sha256_bytes, sha256_json, utc_now
+from .util import FileHashCache, atomic_write, file_hash, sha256_bytes, sha256_json, utc_now
+
+logger = get_logger("data")
+
+# Integrity echoes only (preview/inspect); never used for authorization or
+# worker-side verification.
+_hash_cache = FileHashCache()
 
 BASE_COLUMNS = ("datetime", "open", "high", "low", "close", "volume", "openinterest")
 REQUIRED_COLUMNS = ("datetime", "open", "high", "low", "close")
@@ -114,7 +124,7 @@ class DatasetService:
             "root_id": root_id,
             "relative_path": relative_path,
             "byte_size": path.stat().st_size,
-            "source_sha256": file_hash(path),
+            "source_sha256": _hash_cache.hash(path),
             "delimiter": dialect.delimiter,
             "columns": header,
             "sample_rows": sample_rows,
@@ -138,66 +148,153 @@ class DatasetService:
         if missing:
             raise InvalidRequest(f"column map is missing required columns: {', '.join(missing)}")
         path = self._source(root_id, relative_path)
-        before = file_hash(path)
-        raw = path.read_bytes()
-        after = file_hash(path)
-        if before != after or sha256_bytes(raw) != before:
-            raise InvalidRequest("source changed while it was being registered")
-        text = raw.decode("utf-8-sig")
-        try:
-            dialect = csv.Sniffer().sniff(text[: 64 * 1024], delimiters=",;\t|")
-            reader = csv.DictReader(io.StringIO(text), dialect=dialect)
-        except csv.Error as exc:
-            raise InvalidRequest("source CSV could not be parsed") from exc
-        if reader.fieldnames is None:
-            raise InvalidRequest("source CSV has no header")
-        unknown = [source for source in column_map.values() if source not in reader.fieldnames]
-        if unknown:
-            raise InvalidRequest(f"mapped source columns do not exist: {', '.join(unknown)}")
-        rows: list[dict[str, str]] = []
-        previous_datetime: str | None = None
+        with timed(logger, "dataset.register", root_id=root_id):
+            raw = path.read_bytes()
+            source_digest = sha256_bytes(raw)
+            # Source-level dedup: canonicalization is a deterministic function of
+            # (source bytes, column_map, extra_columns, adapter_options), so an
+            # identical earlier registration can be reused without re-parsing.
+            previous = self._find_registered(
+                source_digest, column_map, extra_columns, adapter_options
+            )
+            if previous is not None:
+                if file_hash(path) != source_digest:
+                    raise InvalidRequest("source changed while it was being registered")
+                return self._store_manifest(
+                    content_digest=previous["extensions"]["content_sha256"],
+                    byte_size=previous["extensions"]["byte_size"],
+                    columns=list(previous["extensions"]["columns"]),
+                    row_count=previous["extensions"]["row_count"],
+                    provenance={
+                        "type": "registered_csv",
+                        "root_id": root_id,
+                        "relative_path": relative_path,
+                        "source_sha256": source_digest,
+                        "column_map": column_map,
+                        "extra_columns": list(extra_columns),
+                        "adapter_options": adapter_options or {},
+                    },
+                    feed_descriptor=feed_descriptor,
+                    declared_transforms=declared_transforms,
+                    content=None,
+                )
+            text = raw.decode("utf-8-sig")
+            try:
+                dialect = csv.Sniffer().sniff(text[: 64 * 1024], delimiters=",;\t|")
+                reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+            except csv.Error as exc:
+                raise InvalidRequest("source CSV could not be parsed") from exc
+            if reader.fieldnames is None:
+                raise InvalidRequest("source CSV has no header")
+            unknown = [source for source in column_map.values() if source not in reader.fieldnames]
+            if unknown:
+                raise InvalidRequest(f"mapped source columns do not exist: {', '.join(unknown)}")
+            canonical_columns = [*BASE_COLUMNS, *extra_columns]
+            content, row_count = self._stream_canonical(
+                reader, canonical_columns, column_map, extra_columns, adapter_options
+            )
+            if file_hash(path) != source_digest:
+                raise InvalidRequest("source changed while it was being registered")
+            return self._store(
+                content,
+                canonical_columns,
+                row_count,
+                {
+                    "type": "registered_csv",
+                    "root_id": root_id,
+                    "relative_path": relative_path,
+                    "source_sha256": source_digest,
+                    "column_map": column_map,
+                    "extra_columns": list(extra_columns),
+                    "adapter_options": adapter_options or {},
+                },
+                feed_descriptor=feed_descriptor,
+                declared_transforms=declared_transforms,
+            )
+
+    def _find_registered(
+        self,
+        source_digest: str,
+        column_map: dict[str, str],
+        extra_columns: tuple[str, ...],
+        adapter_options: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Return a prior manifest whose canonical inputs match exactly."""
+        identity = {
+            "column_map": column_map,
+            "extra_columns": list(extra_columns),
+            "adapter_options": adapter_options or {},
+        }
+        for manifest in self.state.list("dataset"):
+            provenance = manifest.get("provenance")
+            if not isinstance(provenance, dict):
+                continue
+            if provenance.get("source_sha256") != source_digest:
+                continue
+            if {
+                "column_map": provenance.get("column_map"),
+                "extra_columns": provenance.get("extra_columns"),
+                "adapter_options": provenance.get("adapter_options"),
+            } != identity:
+                continue
+            return manifest
+        return None
+
+    def _stream_canonical(
+        self,
+        reader: csv.DictReader,
+        canonical_columns: list[str],
+        column_map: dict[str, str],
+        extra_columns: tuple[str, ...],
+        adapter_options: dict[str, Any] | None,
+    ) -> tuple[bytes, int]:
+        """Normalize rows one at a time into a temp file without materializing them.
+
+        The temp file is later read back as one bounded bytes object (the
+        canonical size is capped by the source cap), so peak memory stays a
+        small multiple of the file size instead of a per-row amplification.
+        """
         options = adapter_options or {}
         time_column = options.get("time_column")
-        for index, source_row in enumerate(reader, start=2):
-            row: dict[str, str] = {}
-            try:
-                datetime_value = source_row[column_map["datetime"]]
-                if time_column is not None:
-                    datetime_value = f"{datetime_value} {source_row[time_column]}"
-                row["datetime"] = _datetime(datetime_value)
-                for column in BASE_COLUMNS[1:]:
-                    if column in column_map:
-                        row[column] = _number(source_row[column_map[column]], column)
-                    elif column == "volume":
-                        row[column] = "0"
-                    elif column == "openinterest":
-                        row[column] = "0"
-                for column in extra_columns:
-                    row[column] = _number(source_row[column_map[column]], column)
-            except (KeyError, TypeError) as exc:
-                raise InvalidRequest(f"row {index} is malformed") from exc
-            if previous_datetime is not None and row["datetime"] <= previous_datetime:
-                raise InvalidRequest("datetime values must be unique and strictly increasing")
-            previous_datetime = row["datetime"]
-            rows.append(row)
-        if not rows:
-            raise InvalidRequest("dataset contains no data rows")
-        canonical_columns = [*BASE_COLUMNS, *extra_columns]
-        canonical = _encode_rows(canonical_columns, rows)
-        return self._store(
-            canonical,
-            canonical_columns,
-            len(rows),
-            {
-                "type": "registered_csv",
-                "root_id": root_id,
-                "relative_path": relative_path,
-                "source_sha256": before,
-                "column_map": column_map,
-            },
-            feed_descriptor=feed_descriptor,
-            declared_transforms=declared_transforms,
-        )
+        fd, temp_name = tempfile.mkstemp(prefix=".canonical.", dir=self.settings.state_root)
+        temp_path = Path(temp_name)
+        row_count = 0
+        previous_datetime: str | None = None
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=canonical_columns, lineterminator="\n")
+                writer.writeheader()
+                for index, source_row in enumerate(reader, start=2):
+                    row: dict[str, str] = {}
+                    try:
+                        datetime_value = source_row[column_map["datetime"]]
+                        if time_column is not None:
+                            datetime_value = f"{datetime_value} {source_row[time_column]}"
+                        row["datetime"] = _datetime(datetime_value)
+                        for column in BASE_COLUMNS[1:]:
+                            if column in column_map:
+                                row[column] = _number(source_row[column_map[column]], column)
+                            elif column == "volume":
+                                row[column] = "0"
+                            elif column == "openinterest":
+                                row[column] = "0"
+                        for column in extra_columns:
+                            row[column] = _number(source_row[column_map[column]], column)
+                    except (KeyError, TypeError) as exc:
+                        raise InvalidRequest(f"row {index} is malformed") from exc
+                    if previous_datetime is not None and row["datetime"] <= previous_datetime:
+                        raise InvalidRequest(
+                            "datetime values must be unique and strictly increasing"
+                        )
+                    previous_datetime = row["datetime"]
+                    writer.writerow(row)
+                    row_count += 1
+            if row_count == 0:
+                raise InvalidRequest("dataset contains no data rows")
+            content = temp_path.read_bytes()
+            return content, row_count
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     @staticmethod
     def _bar_operation(feed: dict[str, Any]) -> dict[str, Any]:
@@ -437,16 +534,26 @@ class DatasetService:
             feed["name"]: child["extensions"]["feed_objects"][feed["name"]]
             for feed, child in zip(feeds, child_manifests)
         }
-        timestamp_sets: dict[str, set[str]] = {}
+        master_item = feed_objects[master_feed]
+        master_path = confined_path(
+            self.settings.state_root, master_item["cas_relative_path"], must_exist=True
+        )
+        with master_path.open("r", encoding="utf-8", newline="") as stream:
+            master_timestamps = {row["datetime"] for row in csv.DictReader(stream)}
+        # Stream every other feed once and count master-membership instead of
+        # materializing a full timestamp set per feed.
+        common_count = len(master_timestamps)
         for name, item in feed_objects.items():
+            if name == master_feed:
+                continue
             path = confined_path(
                 self.settings.state_root, item["cas_relative_path"], must_exist=True
             )
             with path.open("r", encoding="utf-8", newline="") as stream:
-                timestamp_sets[name] = {row["datetime"] for row in csv.DictReader(stream)}
-        master_timestamps = timestamp_sets[master_feed]
-        common = set.intersection(*timestamp_sets.values())
-        overlap = len(common) / len(master_timestamps) if master_timestamps else 0.0
+                common_count = sum(
+                    1 for row in csv.DictReader(stream) if row["datetime"] in master_timestamps
+                )
+        overlap = common_count / len(master_timestamps) if master_timestamps else 0.0
         if overlap < float(alignment["minimum_overlap"]):
             raise InvalidRequest("DataSpec feeds do not satisfy minimum_overlap")
 
@@ -512,7 +619,29 @@ class DatasetService:
         feed_descriptor: dict[str, Any] | None = None,
         declared_transforms: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        content_digest = sha256_bytes(content)
+        return self._store_manifest(
+            content_digest=sha256_bytes(content),
+            byte_size=len(content),
+            columns=columns,
+            row_count=row_count,
+            provenance=provenance,
+            feed_descriptor=feed_descriptor,
+            declared_transforms=declared_transforms,
+            content=content,
+        )
+
+    def _store_manifest(
+        self,
+        content_digest: str,
+        byte_size: int,
+        columns: list[str],
+        row_count: int,
+        provenance: dict[str, Any],
+        *,
+        feed_descriptor: dict[str, Any] | None = None,
+        declared_transforms: list[dict[str, Any]] | None = None,
+        content: bytes | None = None,
+    ) -> dict[str, Any]:
         descriptor = feed_descriptor or {}
         feed_name = descriptor.get("name", "primary")
         source_type = descriptor.get(
@@ -585,6 +714,8 @@ class DatasetService:
             if file_hash(path) != content_digest:
                 raise InvalidRequest("CAS collision or corruption detected")
         else:
+            if content is None:
+                raise InvalidRequest("CAS object missing for reused registration")
             atomic_write(path, content, mode=0o600)
         manifest = {
             "schema_version": "dataset-manifest-v1",
@@ -600,7 +731,7 @@ class DatasetService:
                     "source": {
                         **source,
                         "sha256": provenance.get("source_sha256", content_digest),
-                        "bytes": len(content),
+                        "bytes": byte_size,
                     },
                     "format": input_format,
                     "adapter": adapter,
@@ -625,7 +756,7 @@ class DatasetService:
                 "format": "canonical_csv_v1",
                 "columns": columns,
                 "row_count": row_count,
-                "byte_size": len(content),
+                "byte_size": byte_size,
                 "cas_relative_path": str(path.relative_to(self.settings.state_root)),
                 "created_at": utc_now(),
                 "data_spec": data_spec,
@@ -663,6 +794,8 @@ class DatasetService:
             dataset["extensions"]["cas_relative_path"],
             must_exist=True,
         )
+        # Uncached on purpose: this verification sits on the integrity-critical
+        # path (get_dataset feeds validate/prepare/worker materialization).
         if file_hash(path) != dataset["extensions"]["content_sha256"]:
             raise InvalidRequest("registered dataset content no longer matches its manifest")
         return path
@@ -730,9 +863,11 @@ class DatasetService:
         source = self.get_dataset(source_dataset_id)
         if source["manifest_hash"] != expected_manifest_hash:
             raise InvalidRequest("source dataset manifest hash is stale")
-        with self._content_path(source).open("r", encoding="utf-8", newline="") as stream:
-            rows = list(csv.DictReader(stream))
         columns = list(source["extensions"]["columns"])
+        # Validate the transform descriptor before touching any rows.
+        output: str | None = None
+        period: int | None = None
+        dropna_columns: list[str] | None = None
         if transform_profile_id == "identity":
             if typed_params:
                 raise InvalidRequest("identity transform takes no parameters")
@@ -745,25 +880,15 @@ class DatasetService:
                 or set(typed_params) != {"columns"}
             ):
                 raise InvalidRequest("dropna requires a non-empty typed columns list")
-            rows = [row for row in rows if all(row.get(column, "").strip() for column in selected)]
+            dropna_columns = selected
         elif transform_profile_id in {"returns", "sma"}:
             column = typed_params.get("column", "close")
             if not isinstance(column, str) or column not in columns:
                 raise InvalidRequest("transform column is invalid")
-            values = [float(row[column]) for row in rows]
-            derived: list[str]
             if transform_profile_id == "returns":
                 if set(typed_params) - {"column", "output"}:
                     raise InvalidRequest("returns has unknown parameters")
                 output = typed_params.get("output", f"{column}_return")
-                derived = [""] + [
-                    (
-                        format((values[index] / values[index - 1]) - 1.0, ".17g")
-                        if values[index - 1] != 0
-                        else ""
-                    )
-                    for index in range(1, len(values))
-                ]
             else:
                 if set(typed_params) - {"column", "output", "period"}:
                     raise InvalidRequest("sma has unknown parameters")
@@ -771,13 +896,6 @@ class DatasetService:
                 if not isinstance(period, int) or period < 2 or period > 10000:
                     raise InvalidRequest("sma period must be an integer between 2 and 10000")
                 output = typed_params.get("output", f"{column}_sma_{period}")
-                derived = []
-                rolling = 0.0
-                for index, value in enumerate(values):
-                    rolling += value
-                    if index >= period:
-                        rolling -= values[index - period]
-                    derived.append("" if index + 1 < period else format(rolling / period, ".17g"))
             if (
                 not isinstance(output, str)
                 or not output.isidentifier()
@@ -785,16 +903,27 @@ class DatasetService:
                 or output.startswith("_")
             ):
                 raise InvalidRequest("transform output must be a new public identifier")
-            columns.append(output)
-            for row, derived_value in zip(rows, derived):
-                row[output] = derived_value
         else:
             raise InvalidRequest("unknown transform profile")
-        content = _encode_rows(columns, rows)
+
+        with timed(logger, "dataset.derive", profile=transform_profile_id):
+            if output is not None:
+                columns.append(output)
+            content, row_count = self._stream_derived(
+                source,
+                columns,
+                transform_profile_id,
+                typed_params,
+                dropna_columns=dropna_columns,
+                output=output,
+                period=period,
+            )
+        if len(content) > self.settings.max_dataset_bytes:
+            raise InvalidRequest(f"derived dataset exceeds {self.settings.max_dataset_bytes} bytes")
         return self._store(
             content,
             columns,
-            len(rows),
+            row_count,
             {
                 "type": "derived_tabular_v1",
                 "root_id": "cas",
@@ -805,6 +934,69 @@ class DatasetService:
                 "typed_params": typed_params,
             },
         )
+
+    def _stream_derived(
+        self,
+        source: dict[str, Any],
+        columns: list[str],
+        transform_profile_id: str,
+        typed_params: dict[str, Any],
+        *,
+        dropna_columns: list[str] | None,
+        output: str | None,
+        period: int | None,
+    ) -> tuple[bytes, int]:
+        """Stream one bounded tabular transform into a temp file (row at a time)."""
+        fd, temp_name = tempfile.mkstemp(prefix=".derived.", dir=self.settings.state_root)
+        temp_path = Path(temp_name)
+        row_count = 0
+        previous_value: float | None = None
+        window: list[float] = []
+        rolling = 0.0
+        value_column = typed_params.get("column", "close") if output is not None else None
+        try:
+            with (
+                self._content_path(source).open("r", encoding="utf-8", newline="") as source_stream,
+                os.fdopen(fd, "w", encoding="utf-8", newline="") as stream,
+            ):
+                writer = csv.DictWriter(stream, fieldnames=columns, lineterminator="\n")
+                writer.writeheader()
+                reader = csv.DictReader(source_stream)
+                for index, row in enumerate(reader, start=1):
+                    if dropna_columns is not None:
+                        if not all(row.get(name, "").strip() for name in dropna_columns):
+                            continue
+                    if output is not None:
+                        assert value_column is not None
+                        try:
+                            value = float(row[value_column])
+                        except (ValueError, TypeError) as exc:
+                            raise InvalidRequest(
+                                f"row {index} column {value_column!r} is not numeric"
+                            ) from exc
+                        if transform_profile_id == "returns":
+                            derived = (
+                                format((value / previous_value) - 1.0, ".17g")
+                                if previous_value is not None and previous_value != 0
+                                else ""
+                            )
+                            previous_value = value
+                        else:
+                            assert period is not None
+                            window.append(value)
+                            rolling += value
+                            if len(window) > period:
+                                rolling -= window.pop(0)
+                            derived = (
+                                format(rolling / period, ".17g") if len(window) == period else ""
+                            )
+                        row[output] = derived
+                    writer.writerow(row)
+                    row_count += 1
+            content = temp_path.read_bytes()
+            return content, row_count
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     def materialization(self, dataset_id: str) -> dict[str, Any]:
         """Return ordered trusted worker-only paths and a controlled feed mapping."""
@@ -848,3 +1040,41 @@ class DatasetService:
                 for feed in dataset["feeds"]
             ],
         }
+
+    def clean_cas(self, before_iso: str) -> dict[str, int]:
+        """Delete unreferenced, expired CAS objects (retention GC)."""
+        try:
+            cutoff = datetime.fromisoformat(before_iso)
+        except ValueError as exc:
+            raise InvalidRequest(
+                "before must be an ISO date like YYYY-MM-DD or a full ISO timestamp",
+                suggestion="use YYYY-MM-DD to delete CAS objects older than that date",
+            ) from exc
+        referenced: set[str] = set()
+        for manifest in self.state.list("dataset"):
+            feed_objects = manifest.get("extensions", {}).get("feed_objects")
+            if not isinstance(feed_objects, dict):
+                continue
+            for item in feed_objects.values():
+                relative = item.get("cas_relative_path") if isinstance(item, dict) else None
+                if isinstance(relative, str):
+                    referenced.add(relative)
+        removed = 0
+        cas_root = self.settings.state_root / "cas"
+        if cas_root.is_dir():
+            for path in sorted(cas_root.rglob("*.csv")):
+                relative = str(path.relative_to(self.settings.state_root))
+                if relative in referenced:
+                    continue
+                if not re.fullmatch(r"[0-9a-f]{64}", path.stem):
+                    continue
+                if path.stat().st_mtime >= cutoff.timestamp():
+                    continue
+                path.unlink(missing_ok=True)
+                removed += 1
+        try:
+            self.state.audit("clean.cas", None, {"before": before_iso, "removed_objects": removed})
+            self.state.checkpoint()
+        except Exception:
+            logger.exception("clean.cas audit/checkpoint failed after deletion")
+        return {"removed_objects": removed}

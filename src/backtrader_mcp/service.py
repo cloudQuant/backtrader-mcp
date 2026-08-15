@@ -28,7 +28,7 @@ class BacktraderMCPService:
         self.settings.initialize()
         self.state = StateStore(self.settings.state_root)
         self.locks = LockManager(self.settings.state_root / "locks")
-        self.signer = TokenSigner(self.settings.state_root)
+        self.signer = TokenSigner(self.settings.state_root, state=self.state)
         self.datasets = DatasetService(self.settings, self.state)
         self.catalog = CatalogService(self.settings, self.state)
         self.drafts = DraftService(self.settings, self.state, self.signer, self.locks)

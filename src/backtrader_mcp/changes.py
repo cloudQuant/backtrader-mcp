@@ -16,6 +16,7 @@ from .locks import LockManager
 from .security import TokenSigner, confined_path
 from .settings import Settings
 from .state import StateStore
+from .util import approver_identity as _approver_identity
 from .util import atomic_write, file_hash, sha256_json, utc_now
 
 
@@ -156,7 +157,7 @@ class ChangeService:
         return response
 
     def approve_change(self, change_id: str, change_token: str) -> dict[str, Any]:
-        claims = self.signer.verify(change_token, "change")
+        claims = self.signer.verify(change_token, "change", consume_nonce=False)
         change = self.state.get("change", change_id)
         if (
             claims.get("change_id") != change_id
@@ -165,12 +166,18 @@ class ChangeService:
         ):
             raise Conflict("change token does not bind the prepared change")
         expires = datetime.now(timezone.utc) + timedelta(minutes=15)
-        return self.state.create_approval(
+        approval = self.state.create_approval(
             "change",
             change_id,
             change["change_hash"],
             expires.isoformat(),
         )
+        self.state.audit(
+            "approval.created_by_human",
+            change_id,
+            {"approval_id": approval["approval_id"], "approver": _approver_identity()},
+        )
+        return approval
 
     def apply_strategy_changes(
         self,
@@ -187,16 +194,18 @@ class ChangeService:
         prior = self.state.idempotent_get("apply_strategy_changes", idempotency_key, request)
         if prior is not None:
             return prior
-        claims = self.signer.verify(change_token, "change")
         with self.locks.acquire(f"change:{change_set_id}"):
             change = self.state.get("change", change_set_id)
+            if change["status"] == "applied":
+                # Report the application conflict before consuming the token
+                # nonce so a stale retry gets the actionable conflict.
+                raise Conflict("change set was already applied with another idempotency key")
+            claims = self.signer.verify(change_token, "change", consume_nonce=False)
             if (
                 claims.get("change_id") != change_set_id
                 or claims.get("change_hash") != change["change_hash"]
             ):
                 raise Conflict("change token does not bind this change set")
-            if change["status"] == "applied":
-                raise Conflict("change set was already applied with another idempotency key")
             verified = self.drafts.get_draft(change["draft_id"])
             if (
                 verified["revision"] != change["draft_revision"]
@@ -207,6 +216,7 @@ class ChangeService:
             if _tree_manifest(target) != change["target_preimage_hashes"]:
                 raise Conflict("target changed after prepare")
             self.state.consume_approval(approval_id, "change", change_set_id, change["change_hash"])
+            self.signer.consume(change_token)
             self._replace_tree(change, verified, target)
 
             def mark_applied(current: dict[str, Any]) -> dict[str, Any]:

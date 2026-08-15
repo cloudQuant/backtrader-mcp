@@ -7,12 +7,15 @@ import json
 import re
 from importlib.resources import files
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .errors import InvalidRequest, NotFound
+from .logging_config import get_logger, timed
 from .settings import Settings
 from .state import StateStore
 from .util import file_hash, sha256_json
+
+logger = get_logger("catalog")
 
 ARCHETYPES = (
     "single_data_indicator",
@@ -113,7 +116,9 @@ def _load_packaged_snapshot() -> tuple[dict[str, Any], list[dict[str, Any]]]:
     return header, entries
 
 
-def _package_hash(directory: Path) -> tuple[str, list[dict[str, str]]]:
+def _package_hash(
+    directory: Path, *, hash_file: Callable[[Path], str] = file_hash
+) -> tuple[str, list[dict[str, str]]]:
     strategy_files = sorted(
         path
         for path in directory.glob("strategy_*.py")
@@ -121,7 +126,7 @@ def _package_hash(directory: Path) -> tuple[str, list[dict[str, str]]]:
     )
     candidates = [*strategy_files[:1], directory / "config.yaml", directory / "run.py"]
     package_files = [
-        {"path": path.name, "sha256": file_hash(path)} for path in candidates if path.is_file()
+        {"path": path.name, "sha256": hash_file(path)} for path in candidates if path.is_file()
     ]
     return sha256_json(package_files), package_files
 
@@ -131,6 +136,8 @@ def _build_source_attached_entries(
     package_root: Path,
     functional_root_id: str,
     package_root_id: str,
+    *,
+    hash_file: Callable[[Path], str] = file_hash,
 ) -> tuple[dict[str, int], list[dict[str, Any]]]:
     """Rebuild the two verified metadata adapters without importing corpus code."""
 
@@ -169,7 +176,7 @@ def _build_source_attached_entries(
         package_sha = None
         package_files: list[dict[str, str]] = []
         if package_path is not None:
-            package_sha, package_files = _package_hash(package_path)
+            package_sha, package_files = _package_hash(package_path, hash_file=hash_file)
         stable_key = {
             "functional_root_id": functional_root_id,
             "package_root_id": package_root_id,
@@ -191,7 +198,7 @@ def _build_source_attached_entries(
                 {
                     "root_id": functional_root_id,
                     "relative_path": test_path.relative_to(functional_root).as_posix(),
-                    "sha256": file_hash(test_path),
+                    "sha256": hash_file(test_path),
                 }
                 if test_path
                 else None
@@ -394,111 +401,151 @@ class CatalogService:
             previous is None or previous["snapshot_hash"] != expected_previous_snapshot_hash
         ):
             raise InvalidRequest("source catalog snapshot precondition is stale")
-        entries: list[dict[str, Any]] = []
-        diagnostics: list[dict[str, Any]] = []
-        python_files = sorted(root.rglob("*.py"))
-        if len(python_files) > 5000:
-            raise InvalidRequest("source-attached catalog exceeds the 5000-file P0 limit")
-        for path in python_files:
-            if path.is_symlink():
-                diagnostics.append(
-                    {
-                        "code": "symlink_skipped",
-                        "relative_path": str(path.relative_to(root)),
-                    }
-                )
-                continue
-            relative = str(path.relative_to(root))
-            content = path.read_text(encoding="utf-8")
-            try:
-                tree = ast.parse(content, filename=relative)
-            except SyntaxError as exc:
-                diagnostics.append(
-                    {
-                        "code": "syntax_error",
-                        "relative_path": relative,
-                        "line": exc.lineno,
-                    }
-                )
-                continue
-            imports = sorted(
-                {
-                    alias.name
-                    for node in ast.walk(tree)
-                    if isinstance(node, ast.Import)
-                    for alias in node.names
-                }
-                | {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
-            )
-            for node in tree.body:
-                if not isinstance(node, ast.ClassDef):
-                    continue
-                bases = {
-                    (
-                        base.id
-                        if isinstance(base, ast.Name)
-                        else base.attr
-                        if isinstance(base, ast.Attribute)
-                        else ""
+        with timed(logger, "catalog.refresh_ast", source_root_id=source_root_id):
+            cache = {row["id"]: row for row in self.state.list("catalog_file_cache")}
+            entries: list[dict[str, Any]] = []
+            cache_rows: list[dict[str, Any]] = []
+            diagnostics: list[dict[str, Any]] = []
+            python_files = sorted(root.rglob("*.py"))
+            if len(python_files) > 5000:
+                raise InvalidRequest("source-attached catalog exceeds the 5000-file P0 limit")
+            for path in python_files:
+                if path.is_symlink():
+                    diagnostics.append(
+                        {
+                            "code": "symlink_skipped",
+                            "relative_path": str(path.relative_to(root)),
+                        }
                     )
-                    for base in node.bases
-                }
-                if "Strategy" not in bases:
                     continue
-                stable_key = {
-                    "root_id": source_root_id,
-                    "relative_path": relative,
-                    "class_name": node.name,
-                }
-                entry_id = f"source-{sha256_json(stable_key)}"
-                entries.append(
+                relative = str(path.relative_to(root))
+                stat = path.stat()
+                cache_id = f"{source_root_id}:{relative}"
+                prior = cache.get(cache_id)
+                file_entries: list[dict[str, Any]] = []
+                if (
+                    prior is not None
+                    and prior.get("mtime_ns") == stat.st_mtime_ns
+                    and prior.get("size") == stat.st_size
+                    and isinstance(prior.get("sha256"), str)
+                ):
+                    content_digest = prior["sha256"]
+                    file_entries = prior.get("entries") or []
+                else:
+                    content = path.read_text(encoding="utf-8")
+                    content_digest = file_hash(path)
+                    try:
+                        tree = ast.parse(content, filename=relative)
+                    except SyntaxError as exc:
+                        diagnostics.append(
+                            {
+                                "code": "syntax_error",
+                                "relative_path": relative,
+                                "line": exc.lineno,
+                            }
+                        )
+                    else:
+                        imports = sorted(
+                            {
+                                alias.name
+                                for node in ast.walk(tree)
+                                if isinstance(node, ast.Import)
+                                for alias in node.names
+                            }
+                            | {
+                                node.module or ""
+                                for node in ast.walk(tree)
+                                if isinstance(node, ast.ImportFrom)
+                            }
+                        )
+                        for node in tree.body:
+                            if not isinstance(node, ast.ClassDef):
+                                continue
+                            bases = {
+                                (
+                                    base.id
+                                    if isinstance(base, ast.Name)
+                                    else base.attr
+                                    if isinstance(base, ast.Attribute)
+                                    else ""
+                                )
+                                for base in node.bases
+                            }
+                            if "Strategy" not in bases:
+                                continue
+                            stable_key = {
+                                "root_id": source_root_id,
+                                "relative_path": relative,
+                                "class_name": node.name,
+                            }
+                            entry_id = f"source-{sha256_json(stable_key)}"
+                            file_entries.append(
+                                {
+                                    "id": entry_id,
+                                    "archetype": "single_data_indicator",
+                                    "title": node.name,
+                                    "tags": ["source-attached", "strategy"],
+                                    "summary": f"Static source-attached strategy {node.name}.",
+                                    "source": {
+                                        **stable_key,
+                                        "source_sha256": content_digest,
+                                        "imports": imports,
+                                        "methods": sorted(
+                                            child.name
+                                            for child in node.body
+                                            if isinstance(
+                                                child, (ast.FunctionDef, ast.AsyncFunctionDef)
+                                            )
+                                        ),
+                                    },
+                                }
+                            )
+                cache_rows.append(
                     {
-                        "id": entry_id,
-                        "archetype": "single_data_indicator",
-                        "title": node.name,
-                        "tags": ["source-attached", "strategy"],
-                        "summary": f"Static source-attached strategy {node.name}.",
-                        "source": {
-                            **stable_key,
-                            "source_sha256": file_hash(path),
-                            "imports": imports,
-                            "methods": sorted(
-                                child.name
-                                for child in node.body
-                                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-                            ),
-                        },
+                        "id": cache_id,
+                        "sha256": content_digest,
+                        "mtime_ns": stat.st_mtime_ns,
+                        "size": stat.st_size,
+                        "entries": file_entries,
                     }
                 )
-        entries.sort(key=lambda entry: entry["id"])
-        snapshot = {
-            "schema_version": "corpus-manifest-v1",
-            "corpus_id": f"backtrader-mcp-source-{source_root_id}",
-            "mode": "source-attached",
-            "entries": _manifest_entries(entries),
-            "entry_count": len(entries),
-            "counts": {"source_strategies": len(entries)},
-            "provenance": {
-                "product": "backtrader-mcp",
-                "source_available": True,
-                "source_root_id": source_root_id,
-            },
-            "extensions": {
-                "diagnostics": diagnostics,
+                entries.extend(file_entries)
+            entries.sort(key=lambda entry: entry["id"])
+            snapshot = {
+                "schema_version": "corpus-manifest-v1",
+                "corpus_id": f"backtrader-mcp-source-{source_root_id}",
+                "mode": "source-attached",
+                "entries": _manifest_entries(entries),
                 "entry_count": len(entries),
-                "source_root_id": source_root_id,
-            },
-        }
-        snapshot["snapshot_hash"] = sha256_json(snapshot)
-        for entry in entries:
-            self.state.put("catalog_entry", entry["id"], entry, replace=True)
-        self.state.put("catalog_source", source_root_id, snapshot, replace=True)
-        self.state.audit(
-            "catalog.refreshed",
-            source_root_id,
-            {"snapshot_hash": snapshot["snapshot_hash"], "entry_count": len(entries)},
-        )
-        return snapshot
+                "counts": {"source_strategies": len(entries)},
+                "provenance": {
+                    "product": "backtrader-mcp",
+                    "source_available": True,
+                    "source_root_id": source_root_id,
+                },
+                "extensions": {
+                    "diagnostics": diagnostics,
+                    "entry_count": len(entries),
+                    "source_root_id": source_root_id,
+                },
+            }
+            snapshot["snapshot_hash"] = sha256_json(snapshot)
+            self.state.put_many("catalog_entry", entries)
+            if previous is not None:
+                stale = sorted(
+                    {entry["id"] for entry in previous["entries"]}
+                    - {entry["id"] for entry in entries}
+                )
+                if stale:
+                    self.state.delete_many("catalog_entry", stale)
+            self.state.replace_prefix("catalog_file_cache", source_root_id, cache_rows)
+            self.state.put("catalog_source", source_root_id, snapshot, replace=True)
+            self.state.audit(
+                "catalog.refreshed",
+                source_root_id,
+                {"snapshot_hash": snapshot["snapshot_hash"], "entry_count": len(entries)},
+            )
+            return snapshot
 
     def _refresh_dual_corpus(
         self,
@@ -518,55 +565,89 @@ class CatalogService:
             previous is None or previous["snapshot_hash"] != expected_previous_snapshot_hash
         ):
             raise InvalidRequest("source catalog snapshot precondition is stale")
-        counts, entries = _build_source_attached_entries(
-            functional_root,
-            package_root,
-            functional_root_id,
-            package_root_id,
-        )
-        diagnostics = []
-        if counts != EXPECTED_COUNTS:
-            diagnostics.append(
-                {
-                    "code": "verified_baseline_count_mismatch",
-                    "expected": EXPECTED_COUNTS,
-                    "actual": counts,
+        with timed(logger, "catalog.refresh_dual", scope=state_id):
+            cached = {row["id"]: row for row in self.state.list("catalog_file_cache")}
+            cache_rows: dict[str, dict[str, Any]] = {}
+
+            def cached_hash(scope: str, path: Path) -> str:
+                stat = path.stat()
+                cache_id = f"{scope}:{path.name}"
+                prior = cached.get(cache_id)
+                if (
+                    prior is not None
+                    and prior.get("mtime_ns") == stat.st_mtime_ns
+                    and prior.get("size") == stat.st_size
+                    and isinstance(prior.get("sha256"), str)
+                ):
+                    digest = prior["sha256"]
+                else:
+                    digest = file_hash(path)
+                cache_rows[cache_id] = {
+                    "id": cache_id,
+                    "sha256": digest,
+                    "mtime_ns": stat.st_mtime_ns,
+                    "size": stat.st_size,
+                    "entries": [],
                 }
+                return digest
+
+            counts, entries = _build_source_attached_entries(
+                functional_root,
+                package_root,
+                functional_root_id,
+                package_root_id,
+                hash_file=lambda path: cached_hash(state_id, path),
             )
-        snapshot = {
-            "schema_version": "corpus-manifest-v1",
-            "corpus_id": f"backtrader-mcp-source-{state_id}",
-            "mode": "source-attached",
-            "counts": counts,
-            "entry_count": len(entries),
-            "entries": _manifest_entries(entries),
-            "provenance": {
-                "product": "backtrader-mcp",
-                "source_available": True,
-                "functional_root_id": functional_root_id,
-                "package_root_id": package_root_id,
-            },
-            "extensions": {
-                "diagnostics": diagnostics,
-                "entry_count": len(entries),
-                "functional_root_id": functional_root_id,
-                "package_root_id": package_root_id,
-            },
-        }
-        snapshot["snapshot_hash"] = sha256_json(snapshot)
-        for entry in entries:
-            self.state.put("catalog_entry", entry["id"], entry, replace=True)
-        self.state.put("catalog_source", state_id, snapshot, replace=True)
-        self.state.audit(
-            "catalog.dual_corpus_refreshed",
-            state_id,
-            {
-                "snapshot_hash": snapshot["snapshot_hash"],
-                "entry_count": len(entries),
+            diagnostics = []
+            if counts != EXPECTED_COUNTS:
+                diagnostics.append(
+                    {
+                        "code": "verified_baseline_count_mismatch",
+                        "expected": EXPECTED_COUNTS,
+                        "actual": counts,
+                    }
+                )
+            snapshot = {
+                "schema_version": "corpus-manifest-v1",
+                "corpus_id": f"backtrader-mcp-source-{state_id}",
+                "mode": "source-attached",
                 "counts": counts,
-            },
-        )
-        return snapshot
+                "entry_count": len(entries),
+                "entries": _manifest_entries(entries),
+                "provenance": {
+                    "product": "backtrader-mcp",
+                    "source_available": True,
+                    "functional_root_id": functional_root_id,
+                    "package_root_id": package_root_id,
+                },
+                "extensions": {
+                    "diagnostics": diagnostics,
+                    "entry_count": len(entries),
+                    "functional_root_id": functional_root_id,
+                    "package_root_id": package_root_id,
+                },
+            }
+            snapshot["snapshot_hash"] = sha256_json(snapshot)
+            self.state.put_many("catalog_entry", entries)
+            if previous is not None:
+                stale = sorted(
+                    {entry["id"] for entry in previous["entries"]}
+                    - {entry["id"] for entry in entries}
+                )
+                if stale:
+                    self.state.delete_many("catalog_entry", stale)
+            self.state.replace_prefix("catalog_file_cache", state_id, list(cache_rows.values()))
+            self.state.put("catalog_source", state_id, snapshot, replace=True)
+            self.state.audit(
+                "catalog.dual_corpus_refreshed",
+                state_id,
+                {
+                    "snapshot_hash": snapshot["snapshot_hash"],
+                    "entry_count": len(entries),
+                    "counts": counts,
+                },
+            )
+            return snapshot
 
     def inspect_strategy(
         self, strategy_id: str, expected_source_hash: str | None = None
