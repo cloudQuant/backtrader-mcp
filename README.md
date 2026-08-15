@@ -424,6 +424,18 @@ Watchdog cleanup records PIDs without process start-time binding; on a
 long-lived host a reused PID could in theory be signalled, and the heartbeat
 staleness check is the primary defence.
 
+**Approval host assumption.** Change and run approvals are created only by the
+trusted local CLI, but the human-vs-agent separation holds only while the host
+does not grant the agent local command execution: an agent with shell access
+could run the printed `approve` command itself. Every approval record and its
+audit entry carry the OS identity of the local approver; for stronger
+separation, gate the `approve` CLI behind sudo/another OS account or an
+approval daemon outside the agent's reach. Signed tokens now carry one-time
+nonces consumed at the authorization landing point (apply/start), and
+replayed, expired, or clock-skewed tokens are rejected. On Windows the lock
+layer falls back to `msvcrt` byte-range locking, but a real Windows host run
+has still not been recorded.
+
 ## Development and acceptance
 
 Run all commands from this directory:
@@ -843,6 +855,14 @@ host 运行结果。
 是单主机的，带日志的目录交换可崩溃恢复，但不是多主机分布式事务。取消是基于进程的，
 不是 MCP Tasks 能力。watchdog 清理只记录 PID 而不绑定进程启动时间；在长期运行的宿主
 上，被复用的 PID 理论上可能被误发信号，心跳失速判定是主要防线。
+
+**审批的宿主假设。** change/run 审批只由可信本地 CLI 创建，但"人机分离"
+只在宿主不给 Agent 本地命令执行能力时成立：有 shell 权限的 Agent 可以自行
+运行打印出来的 `approve` 命令。每条审批记录及其审计行都携带本地审批者的 OS
+身份；需要更强隔离时，请把 `approve` CLI 置于 sudo/另一 OS 账户或 Agent 触达
+范围之外的审批守护进程之后。签名令牌现在携带一次性 nonce，在授权落地点
+（apply/start）原子消费；重放、过期或时钟偏移超窗的令牌一律被拒绝。Windows
+上锁层回退到 `msvcrt` 字节范围锁，但真实 Windows 宿主运行仍未记录。
 
 ## 开发与验收
 

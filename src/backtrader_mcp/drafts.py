@@ -301,7 +301,12 @@ class DraftService:
             return {**record, "validation_token": token}
 
     def verify_validation(self, draft_id: str, validation_token: str) -> dict[str, Any]:
-        claims = self.signer.verify(validation_token, "validation")
+        # Validation capabilities are multi-use by design: their binding is the
+        # exact draft content hash, and prepare flows legitimately re-verify
+        # them (the run contract asks for a fresh validation when the draft
+        # changed). Anti-replay at the authorization landing points comes from
+        # single-use change/run tokens and one-time approvals.
+        claims = self.signer.verify(validation_token, "validation", consume_nonce=False)
         draft = self.get_draft(draft_id)
         validation = self.state.get("validation", claims.get("validation_id", ""))
         expected = {

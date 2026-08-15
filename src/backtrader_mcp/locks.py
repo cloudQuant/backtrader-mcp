@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+
+try:
+    import fcntl
+except ImportError:  # Windows: fall back to msvcrt byte-range locking
+    fcntl = None  # type: ignore[assignment]
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None  # type: ignore[assignment]
 
 
 class LockManager:
@@ -21,8 +29,19 @@ class LockManager:
         path = self.root / f"{digest}.lock"
         fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            elif msvcrt is not None:
+                # Lock the first byte for the process lifetime of the context.
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            elif msvcrt is not None:
+                try:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
             os.close(fd)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 from .errors import InvalidRequest
@@ -170,7 +171,8 @@ def render_markdown(result: dict[str, Any]) -> str:
     if isinstance(extra, dict) and extra:
         lines.extend(["", "## Extra metrics", ""])
         for name, value in sorted(extra.items()):
-            lines.append(f"- {name}: {value}")
+            safe_name = re.sub(r"[^A-Za-z0-9_.\-]", "_", str(name))
+            lines.append(f"- {safe_name}: {value}")
     diagnostics = result.get("diagnostics", [])
     lines.extend(["", "## Diagnostics", "", f"- Count: {len(diagnostics)}"])
     return "\n".join(lines) + "\n"

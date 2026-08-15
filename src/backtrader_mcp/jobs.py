@@ -23,6 +23,7 @@ from .process_control import is_posix, platform_environment, popen_group_options
 from .security import TokenSigner
 from .settings import Settings
 from .state import StateStore
+from .util import approver_identity as _approver_identity
 from .util import file_hash, sha256_json, utc_now
 
 logger = get_logger("jobs")
@@ -236,7 +237,7 @@ class JobService:
         return response
 
     def approve_run_plan(self, run_plan_id: str, run_token: str) -> dict[str, Any]:
-        claims = self.signer.verify(run_token, "run_plan")
+        claims = self.signer.verify(run_token, "run_plan", consume_nonce=False)
         plan = self.state.get("run_plan", run_plan_id)
         if (
             claims.get("run_plan_id") != run_plan_id
@@ -245,12 +246,18 @@ class JobService:
         ):
             raise Conflict("run token does not bind the prepared run plan")
         expires = datetime.now(timezone.utc) + timedelta(minutes=15)
-        return self.state.create_approval(
+        approval = self.state.create_approval(
             "run",
             run_plan_id,
             plan["run_plan_hash"],
             expires.isoformat(),
         )
+        self.state.audit(
+            "approval.created_by_human",
+            run_plan_id,
+            {"approval_id": approval["approval_id"], "approver": _approver_identity()},
+        )
+        return approval
 
     def _assert_capacity(self) -> None:
         """Reject new starts when the active-job cap is reached (no queueing)."""
@@ -364,13 +371,16 @@ class JobService:
         prior = self.state.idempotent_get("start_strategy_run", idempotency_key, request)
         if prior is not None:
             return prior
-        claims = self.signer.verify(run_token, "run_plan")
         with self.locks.acquire(f"run-plan:{run_plan_id}"):
             plan = self.state.get("run_plan", run_plan_id)
+            if plan["status"] != "prepared":
+                # Report the stale-plan conflict before consuming the token
+                # nonce so a retry gets the actionable conflict.
+                raise Conflict("run token is stale or does not bind this run plan")
+            claims = self.signer.verify(run_token, "run_plan", consume_nonce=False)
             if (
                 claims.get("run_plan_id") != run_plan_id
                 or claims.get("run_plan_hash") != plan["run_plan_hash"]
-                or plan["status"] != "prepared"
             ):
                 raise Conflict("run token is stale or does not bind this run plan")
             with self.locks.acquire("job-concurrency"):
@@ -400,6 +410,7 @@ class JobService:
                     raise Conflict("run inputs changed after prepare")
                 self._assert_capacity()
                 self.state.consume_approval(approval_id, "run", run_plan_id, plan["run_plan_hash"])
+                self.signer.consume(run_token)
                 job_id, job_root = self._create_job_record(plan, runtime, approval_id)
                 response = {
                     "job_id": job_id,

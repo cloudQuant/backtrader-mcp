@@ -28,6 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   values.
 - Tool annotations (readOnlyHint/destructiveHint/idempotentHint/openWorldHint/
   title) across the 29-tool surface.
+- Trusted authorization and security hardening (iteration 010):
+  approver OS identity recorded on approval audits, the README states the
+  host assumption for human-vs-agent approval separation, signed tokens
+  carry one-time nonces consumed atomically at the authorization landing
+  point (replayed/expired/clock-skewed tokens are rejected), the run-result
+  contract restricts adapter class and feed names to identifiers and escapes
+  Markdown metric names, the lock layer falls back to msvcrt on Windows,
+  worker runs record resource-limit support status, and the constraints file
+  pins the full 55-package dependency closure (per-archive hashes documented
+  as incompatible with the wheel's range metadata and the VCS backtrader).
 - Streaming data pipeline and storage retention (iteration 009):
   row-at-a-time dataset registration with bounded memory, source-level
   deduplication, streamed feed alignment, hardened tabular derivation

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -34,6 +35,8 @@ logger = get_logger("worker")
 # numerical libraries otherwise try to create a CPU-sized thread pool during
 # import, which both weakens that budget and can make a constrained worker fail
 # before it executes user code.
+_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
+
 _NUMERIC_THREAD_ENVIRONMENT = {
     "OPENBLAS_NUM_THREADS": "1",
     "OMP_NUM_THREADS": "1",
@@ -71,6 +74,26 @@ def _apply_resource_limits(limits: dict[str, int]) -> None:
             resource_module.setrlimit(res, (soft, hard))
         except (ValueError, OSError):
             pass
+
+
+def _resource_limit_status(limits: dict[str, int]) -> list[dict[str, Any]]:
+    """Worker-side observability proxy for the candidate resource caps.
+
+    The pre-exec hook applies limits in the child where failures are silent,
+    so the supervisor records what was requested and whether this platform
+    supports each limit constant at all.
+    """
+    constants = {
+        "cpu_seconds": ("RLIMIT_CPU", limits.get("cpu_seconds", 0)),
+        "memory_bytes": ("RLIMIT_AS", limits.get("memory_bytes", 0)),
+        "file_size_bytes": ("RLIMIT_FSIZE", limits.get("file_size_bytes", 0)),
+        "processes": ("RLIMIT_NPROC", limits.get("processes", 0)),
+    }
+    status = []
+    for name, (constant, value) in constants.items():
+        supported = resource_module is not None and hasattr(resource_module, constant)
+        status.append({"resource": name, "requested": value, "supported": supported})
+    return status
 
 
 def _update_if(store: StateStore, job_id: str, expected: Any, **values: Any) -> dict[str, Any]:
@@ -192,7 +215,12 @@ def _validate_result(value: Any, expected_feed_configs: list[dict[str, Any]]) ->
         dataset_feed = item.get("dataset_feed")
         strategy_feed = item.get("strategy_feed")
         config = expected.get(dataset_feed)
-        if config is None or not isinstance(strategy_feed, str) or not strategy_feed:
+        if (
+            config is None
+            or not isinstance(strategy_feed, str)
+            or not strategy_feed
+            or not _IDENTIFIER_PATTERN.match(strategy_feed)
+        ):
             raise ValueError("typed feed runtime evidence names an unknown feed")
         if strategy_feed in strategy_names:
             raise ValueError("typed feed runtime evidence repeats a strategy feed")
@@ -216,7 +244,14 @@ def _validate_result(value: Any, expected_feed_configs: list[dict[str, Any]]) ->
             raise ValueError("typed feed runtime evidence has invalid row counts")
         constructed = item.get("constructed_class")
         registered = item.get("registered_class")
-        if not isinstance(constructed, str) or not constructed or not isinstance(registered, str):
+        if (
+            not isinstance(constructed, str)
+            or not constructed
+            or not _IDENTIFIER_PATTERN.match(constructed)
+            or not isinstance(registered, str)
+            or not registered
+            or not _IDENTIFIER_PATTERN.match(registered)
+        ):
             raise ValueError("typed feed runtime evidence has invalid adapter classes")
         sanitized.append(
             {
@@ -347,6 +382,14 @@ def run_worker(state_root: Path, job_id: str) -> int:
     if _write_running(state, job_id) is None:
         logger.info("worker.start_suppressed job_id=%s", job_id)
         return 3
+    resource_status = _resource_limit_status(resource_limits)
+    _update_if(
+        state,
+        job_id,
+        lambda current: current.get("state") in ACTIVE_STATES,
+        resource_limits_status=resource_status,
+    )
+    state.audit("job.resource_limits", job_id, {"status": resource_status})
     logger.info("worker.run_start job_id=%s profile=%s", job_id, job["run_profile_id"])
     deadline = time.monotonic() + job["timeout_seconds"]
     mode_results: dict[str, dict[str, Any]] = {}

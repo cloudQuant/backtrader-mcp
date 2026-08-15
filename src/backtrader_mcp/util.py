@@ -117,3 +117,15 @@ class FileHashCache:
                 self._entries.clear()
             self._entries[key] = digest
         return digest
+
+
+def approver_identity() -> dict[str, Any]:
+    """OS identity of the local approver for audit records (best-effort)."""
+    import getpass
+
+    identity: dict[str, Any] = {"username": getpass.getuser()}
+    try:
+        identity["uid"] = os.getuid()
+    except AttributeError:  # non-POSIX
+        pass
+    return identity

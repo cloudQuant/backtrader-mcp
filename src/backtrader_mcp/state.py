@@ -70,6 +70,10 @@ class StateStore:
                     subject_id TEXT,
                     details_json TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS nonces (
+                    nonce TEXT PRIMARY KEY,
+                    used_at TEXT
+                );
                 """)
 
     def put(
@@ -256,6 +260,28 @@ class StateStore:
                 (before_iso, before_iso),
             )
             return cursor.rowcount
+
+    def issue_nonce(self, nonce: str) -> None:
+        """Register a freshly generated token nonce (collision-safe insert)."""
+        try:
+            with self.connect() as connection:
+                connection.execute("INSERT INTO nonces(nonce,used_at) VALUES(?,NULL)", (nonce,))
+        except sqlite3.IntegrityError as exc:
+            raise Conflict(f"nonce already exists: {nonce}") from exc
+
+    def consume_nonce(self, nonce: str) -> bool:
+        """Atomically consume one nonce; False when absent or already used."""
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT used_at FROM nonces WHERE nonce=?", (nonce,)
+            ).fetchone()
+            if row is None or row["used_at"] is not None:
+                connection.rollback()
+                return False
+            connection.execute("UPDATE nonces SET used_at=? WHERE nonce=?", (utc_now(), nonce))
+            connection.commit()
+        return True
 
     def idempotent_get(
         self, scope: str, key: str, request: dict[str, Any]
