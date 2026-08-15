@@ -140,8 +140,19 @@ class StateStore:
             return cursor.rowcount
 
     def update(
-        self, kind: str, object_id: str, mutator: Callable[[dict[str, Any]], dict[str, Any]]
+        self,
+        kind: str,
+        object_id: str,
+        mutator: Callable[[dict[str, Any]], dict[str, Any]],
+        *,
+        expected: Callable[[dict[str, Any]], bool] | None = None,
     ) -> dict[str, Any]:
+        """Read-modify-write one object inside a transaction.
+
+        ``expected`` is an optional precondition evaluated against the
+        transaction's fresh read. A failing precondition rolls back and raises
+        ``Conflict`` so callers can implement compare-and-swap transitions.
+        """
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -150,13 +161,25 @@ class StateStore:
             if row is None:
                 connection.rollback()
                 raise NotFound(f"{kind} not found: {object_id}")
-            new_payload = mutator(json.loads(row["payload_json"]))
+            current = json.loads(row["payload_json"])
+            if expected is not None and not expected(current):
+                connection.rollback()
+                raise Conflict(f"{kind} precondition failed: {object_id}")
+            new_payload = mutator(current)
             connection.execute(
                 "UPDATE objects SET payload_json=?,updated_at=? WHERE kind=? AND id=?",
                 (canonical_json(new_payload), utc_now(), kind, object_id),
             )
             connection.commit()
         return new_payload
+
+    def delete(self, kind: str, object_id: str) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM objects WHERE kind=? AND id=?", (kind, object_id))
+
+    def checkpoint(self) -> None:
+        with self.connect() as connection:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
     def idempotent_get(
         self, scope: str, key: str, request: dict[str, Any]

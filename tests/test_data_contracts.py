@@ -33,6 +33,10 @@ def test_dataset_register_preview_derive_and_confinement(service_env):
         {key: value for key, value in dataset.items() if key != "manifest_hash"}
     )
     assert service.preview_dataset(dataset["dataset_id"], 3)["rows"][0]["openinterest"] == "0"
+    preview = service.preview_dataset(dataset["dataset_id"], 3)
+    assert preview["truncated"] is True
+    assert "limit" in preview["truncation_message"]
+    assert str(preview["truncation_message"]).find("180") != -1
     derived = service.derive_tabular_dataset(
         dataset["dataset_id"],
         "sma",

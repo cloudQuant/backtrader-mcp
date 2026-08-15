@@ -14,7 +14,7 @@ from typing import Any
 from . import __version__
 from .backtrader_runtime import inspect_installed_backtrader, inspect_runtime_root
 from .data import INPUT_FORMAT_ADAPTERS
-from .jobs import RUN_PROFILES
+from .jobs import ACTIVE_STATES, RUN_PROFILES, TERMINAL_STATES
 from .settings import Settings
 
 _RUNTIME_PROBE = """
@@ -240,6 +240,52 @@ def _runtime_report(runtime_id: str, root: Path) -> tuple[dict[str, Any], list[d
     return report, issues
 
 
+def _jobs_stats(settings: Settings) -> dict[str, Any] | None:
+    """Read-only job subsystem statistics; None when state was never created.
+
+    Opens the SQLite database with ``mode=ro`` so the diagnostic creates no
+    files (no WAL/SHM side effects) and cannot mutate the state root.
+    """
+    database = settings.state_root / "state.sqlite3"
+    if not database.is_file():
+        return None
+    import sqlite3
+
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute("PRAGMA query_only=ON")
+        rows = connection.execute("SELECT payload_json FROM objects WHERE kind='job'").fetchall()
+    except sqlite3.Error:
+        return {"initialized": True, "error": "state database is not readable"}
+    finally:
+        connection.close()
+    jobs = [json.loads(row["payload_json"]) for row in rows]
+    counts = {state: 0 for state in sorted(TERMINAL_STATES | ACTIVE_STATES)}
+    oldest_active: dict[str, Any] | None = None
+    for job in jobs:
+        state = job.get("state")
+        if state in counts:
+            counts[state] += 1
+        if state in ACTIVE_STATES:
+            created = job.get("created_at")
+            if oldest_active is None or (created or "") < (oldest_active.get("created_at") or ""):
+                oldest_active = {
+                    "job_id": job.get("job_id"),
+                    "state": state,
+                    "created_at": created,
+                    "started_at": job.get("started_at"),
+                    "heartbeat_at": job.get("heartbeat_at"),
+                }
+    wal_path = database.parent / (database.name + "-wal")
+    return {
+        "initialized": True,
+        "counts": counts,
+        "oldest_active_job": oldest_active,
+        "wal_bytes": wal_path.stat().st_size if wal_path.is_file() else 0,
+    }
+
+
 def doctor_report(settings: Settings) -> dict[str, Any]:
     """Return a deterministic, read-only diagnostic report for one installation."""
 
@@ -386,6 +432,17 @@ def doctor_report(settings: Settings) -> dict[str, Any]:
         issues.extend(runtime_issues)
 
     product_origin = Path(__file__).resolve().with_name("__init__.py")
+    jobs_stats = _jobs_stats(settings)
+    if jobs_stats is not None and "error" in jobs_stats:
+        issues.append(
+            {
+                "code": "state_unreadable",
+                "severity": "warning",
+                "subject": "jobs",
+                "message": jobs_stats["error"],
+                "suggestion": "check permissions on the private state root",
+            }
+        )
     return {
         "schema_version": "backtrader-mcp-doctor-v1",
         "status": ("failed" if any(issue["severity"] == "error" for issue in issues) else "passed"),
@@ -404,6 +461,7 @@ def doctor_report(settings: Settings) -> dict[str, Any]:
             "targets": target_roots,
         },
         "runtimes": runtimes,
+        "jobs": jobs_stats,
         "capabilities": {
             "transport": "stdio",
             "offline_backtest_only": True,

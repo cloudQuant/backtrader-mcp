@@ -14,7 +14,7 @@ from .contracts import ARCHETYPES, StrategySpec
 from .data import DatasetService
 from .doctor import doctor_report
 from .drafts import DraftService
-from .jobs import JobService
+from .jobs import DEFAULT_LOG_TAIL_BYTES, JobService
 from .locks import LockManager
 from .reports import compare_metrics, render_markdown
 from .security import TokenSigner
@@ -100,13 +100,17 @@ class BacktraderMCPService:
             expected_manifest_hash,
         )
 
-    def get_catalog_snapshot(self) -> dict[str, Any]:
-        return self.catalog.get_snapshot()
+    def get_catalog_snapshot(
+        self, include_entries: bool = False, limit: int = 50, offset: int = 0
+    ) -> dict[str, Any]:
+        return self.catalog.get_snapshot(
+            include_entries=include_entries, limit=limit, offset=offset
+        )
 
     def search_strategy_catalog(
-        self, query: str = "", archetype: str | None = None, limit: int = 20
+        self, query: str = "", archetype: str | None = None, limit: int = 20, offset: int = 0
     ) -> dict[str, Any]:
-        return self.catalog.search(query, archetype, limit)
+        return self.catalog.search(query, archetype, limit, offset)
 
     def refresh_strategy_catalog(
         self,
@@ -281,6 +285,14 @@ class BacktraderMCPService:
 
     def get_run_status(self, job_id: str) -> dict[str, Any]:
         return self.jobs.get_run_status(job_id)
+
+    def list_jobs(
+        self, state: str | None = None, limit: int = 50, offset: int = 0
+    ) -> dict[str, Any]:
+        return self.jobs.list_jobs(state_filter=state, limit=limit, offset=offset)
+
+    def get_run_logs(self, job_id: str, tail_bytes: int = DEFAULT_LOG_TAIL_BYTES) -> dict[str, Any]:
+        return self.jobs.get_job_logs(job_id, tail_bytes)
 
     def cancel_strategy_run(self, job_id: str, idempotency_key: str) -> dict[str, Any]:
         return self.jobs.cancel_strategy_run(job_id, idempotency_key)

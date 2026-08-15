@@ -17,6 +17,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `backtrader-mcp install-backtrader`, which installs the pinned CloudQuant
   source only when Backtrader is absent and otherwise reports a non-destructive
   warning for another distribution.
+- LLM operation-loop surface (iteration 007): `list_jobs` (state-filtered job
+  enumeration), `get_run_logs` (bounded, path-sanitized job log tails), the
+  `backtrader-mcp://jobs/{job_id}/logs` resource, and a
+  `list_strategy_templates` tool. `get_run_status` now reports `log_uri`,
+  `elapsed_seconds`, and `eta_bound`.
+- Structured client-facing error contract: tool errors cross the MCP boundary
+  as `[code] message` text with optional `Suggestion:` guidance; absolute
+  paths are redacted at the boundary, and unknown inputs enumerate valid
+  values.
+- Tool annotations (readOnlyHint/destructiveHint/idempotentHint/openWorldHint/
+  title) across the 29-tool surface.
+- Job state-machine hardening (iteration 008): compare-and-swap transitions
+  with terminal-first arbitration, a server-owned watchdog consuming the
+  worker heartbeat and enforcing the wall-clock deadline, structured
+  `error_kind` classification, an atomic concurrency gate (reject instead of
+  queue), `clean --kind jobs` retention, and a read-only doctor jobs section.
 
 ### Changed
 - Ruff is the single formatter; mypy failures now block CI and pre-commit.
@@ -30,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the clean-room protocol verification.
 - Clean-wheel acceptance now installs its own `[test]` dependency closure and
   runs the MCP v2 protocol tests from the installed target.
+- `get_catalog_snapshot` defaults to the slim header; entries are opt-in via
+  `include_entries`/`limit`/`offset` with pagination metadata.
+  `search_strategy_catalog` reports `total`/`has_more`/`offset` and actionable
+  empty-result suggestions. `preview_dataset` reports `truncation_message`
+  guidance.
 
 ### Fixed
 - Release metadata now has one source: Hatch derives wheel version from
@@ -47,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Boundary-contract regression coverage for independence auditing, the local
   CLI control plane, and reports raised the enforced branch-coverage gate to
   80% and synchronized contributor and user documentation.
+- A runtime root that is the active installed package is now judged by its
+  distribution provenance (direct_url.json / source origin) instead of a
+  `git -C` probe that could discover an unrelated enclosing repository, e.g.
+  a venv nested inside the product checkout.
 
 ## [0.2.0] - 2026-08-01
 

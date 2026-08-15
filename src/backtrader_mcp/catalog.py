@@ -238,8 +238,35 @@ class CatalogService:
         )
         self.snapshot_hash = self.snapshot["snapshot_hash"]
 
-    def get_snapshot(self) -> dict[str, Any]:
-        return dict(self.snapshot)
+    def get_snapshot(
+        self, include_entries: bool = False, limit: int = 50, offset: int = 0
+    ) -> dict[str, Any]:
+        """Return the immutable packaged snapshot header, or a bounded entry page.
+
+        The default header keeps counts, hashes, and provenance (including
+        ``extensions.entry_count``) and omits the full entry list to respect the
+        client context budget. Set ``include_entries`` to page through entries.
+        """
+        header = {key: value for key, value in self.snapshot.items() if key != "entries"}
+        if not include_entries:
+            return dict(header)
+        if not isinstance(limit, int) or limit < 1 or limit > 100:
+            raise InvalidRequest("snapshot entry limit must be between 1 and 100")
+        if not isinstance(offset, int) or offset < 0:
+            raise InvalidRequest("snapshot offset must be a non-negative integer")
+        all_entries = self.snapshot["entries"]
+        page = all_entries[offset : offset + limit]
+        return {
+            **header,
+            "entries": page,
+            "pagination": {
+                "total": len(all_entries),
+                "limit": limit,
+                "offset": offset,
+                "has_more": offset + len(page) < len(all_entries),
+                "truncated": len(page) < len(all_entries),
+            },
+        }
 
     def get_entry(self, entry_id: str) -> dict[str, Any]:
         for entry in self.entries:
@@ -252,12 +279,17 @@ class CatalogService:
         raise NotFound(f"catalog entry not found: {entry_id}")
 
     def search(
-        self, query: str = "", archetype: str | None = None, limit: int = 20
+        self, query: str = "", archetype: str | None = None, limit: int = 20, offset: int = 0
     ) -> dict[str, Any]:
         if not isinstance(limit, int) or limit < 1 or limit > 100:
             raise InvalidRequest("catalog search limit must be between 1 and 100")
+        if not isinstance(offset, int) or offset < 0:
+            raise InvalidRequest("catalog search offset must be a non-negative integer")
         if archetype is not None and archetype not in ARCHETYPES:
-            raise InvalidRequest(f"unknown archetype: {archetype}")
+            raise InvalidRequest(
+                f"unknown archetype: {archetype}; valid archetypes: {', '.join(ARCHETYPES)}",
+                suggestion="use list_strategy_templates to see the available archetypes",
+            )
         terms = _tokens(query)
         ranked: list[tuple[int, str, dict[str, Any], list[str]]] = []
         entries = list(self.entries)
@@ -295,11 +327,16 @@ class CatalogService:
                 reasons.append("mapped across both verified corpora")
             ranked.append((-score, entry_id, entry, reasons))
         ranked.sort(key=lambda item: (item[0], item[1]))
-        return {
+        total = len(ranked)
+        page = ranked[offset : offset + limit]
+        response = {
             "query": query,
             "archetype": archetype,
             "snapshot_hash": self.snapshot_hash,
             "corpus_id": self.get_snapshot()["corpus_id"],
+            "total": total,
+            "offset": offset,
+            "has_more": offset + len(page) < total,
             "entries": [
                 {
                     **entry,
@@ -307,9 +344,18 @@ class CatalogService:
                     "score": -score,
                     "match_reasons": reasons,
                 }
-                for score, entry_id, entry, reasons in ranked[:limit]
+                for score, entry_id, entry, reasons in page
             ],
         }
+        if total == 0:
+            response["suggestions"] = {
+                "hint": (
+                    "no entries matched the query tokens; try fewer or more general terms, "
+                    "or filter by archetype"
+                ),
+                "valid_archetypes": list(ARCHETYPES),
+            }
+        return response
 
     def list_templates(self) -> dict[str, Any]:
         templates = [

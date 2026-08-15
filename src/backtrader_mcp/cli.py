@@ -8,6 +8,7 @@ import sys
 from typing import Any, Sequence
 
 from .errors import NotFound, ProductError
+from .jobs import job_summary
 from .logging_config import configure_logging
 from .service import BacktraderMCPService
 from .settings import Settings
@@ -57,27 +58,13 @@ def build_parser() -> argparse.ArgumentParser:
     logs_parser.add_argument("--job", required=True)
 
     clean_parser = subparsers.add_parser(
-        "clean", help="delete old audit or idempotency records before a date"
+        "clean", help="delete old audit, idempotency, or terminal job records before a date"
     )
-    clean_parser.add_argument("--kind", required=True, choices=("audit", "idempotency"))
+    clean_parser.add_argument("--kind", required=True, choices=("audit", "idempotency", "jobs"))
     clean_parser.add_argument(
         "--before", required=True, help="ISO date YYYY-MM-DD (records older than this are deleted)"
     )
     return parser
-
-
-def _summarize_job(job: dict[str, Any]) -> dict[str, Any]:
-    error = job.get("error") or ""
-    return {
-        "job_id": job.get("job_id"),
-        "state": job.get("state"),
-        "draft_id": job.get("draft_id"),
-        "run_profile_id": job.get("run_profile_id"),
-        "created_at": job.get("created_at"),
-        "started_at": job.get("started_at"),
-        "finished_at": job.get("finished_at"),
-        "error": error[:200],
-    }
 
 
 def _list_objects(
@@ -93,7 +80,9 @@ def _list_objects(
         if kind == "job":
             if state_filter:
                 items = [job for job in items if job.get("state") == state_filter]
-            items = [_summarize_job(job) for job in items]
+            # Newest-first, matching the MCP list_jobs ordering.
+            items = sorted(items, key=lambda job: job.get("created_at", ""), reverse=True)
+            items = [job_summary(job) for job in items]
     return {"kind": kind, "count": len(items), "items": items[:limit]}
 
 
@@ -133,6 +122,9 @@ def _print_job_logs(service: BacktraderMCPService, job_id: str) -> int:
 
 
 def _clean_records(service: BacktraderMCPService, kind: str, before: str) -> dict[str, Any]:
+    if kind == "jobs":
+        result = service.jobs.clean_jobs(before)
+        return {"kind": kind, "before": before, **result}
     if kind == "audit":
         deleted = service.state.clean_audit(before)
     else:

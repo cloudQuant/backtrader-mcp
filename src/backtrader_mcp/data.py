@@ -706,11 +706,19 @@ class DatasetService:
         with self._content_path(dataset).open("r", encoding="utf-8", newline="") as stream:
             reader = csv.DictReader(stream)
             rows = [row for _, row in zip(range(limit), reader)]
-        return {
+        truncated = dataset["extensions"]["row_count"] > len(rows)
+        response: dict[str, Any] = {
             "dataset": dataset,
             "rows": rows,
-            "truncated": dataset["extensions"]["row_count"] > len(rows),
+            "truncated": truncated,
         }
+        if truncated:
+            response["truncation_message"] = (
+                f"preview returned {len(rows)} of {dataset['extensions']['row_count']} rows; "
+                f"increase limit up to {self.settings.max_preview_rows} or derive a filtered "
+                "dataset"
+            )
+        return response
 
     def derive_tabular_dataset(
         self,
