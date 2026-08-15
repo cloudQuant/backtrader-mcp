@@ -65,6 +65,7 @@ class StrategySpec:
     cash_value: float = 100_000.0
     commission_value: float = 0.001
     slippage_value: float = 0.0
+    seed: int | None = None
     spec_hash: str = ""
     dataset_feed_names: tuple[str, ...] = field(default_factory=tuple, repr=False)
 
@@ -96,6 +97,7 @@ class StrategySpec:
             "extensions",
             "non_goals",
             "undecided",
+            "seed",
         }
         legacy_fields = {
             "class_name",
@@ -362,11 +364,45 @@ class StrategySpec:
                 raise InvalidRequest(f"StrategySpec {field_name} must be an object")
             return normalized
 
+        raw_seed = value.get("seed")
+        if raw_seed is not None and (
+            not isinstance(raw_seed, int)
+            or isinstance(raw_seed, bool)
+            or not 0 <= raw_seed <= 2**32 - 1
+        ):
+            raise InvalidRequest("StrategySpec seed must be an integer between 0 and 2^32-1")
+
         def string_list(field_name: str) -> list[str]:
             raw = value.get(field_name, [])
             if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
                 raise InvalidRequest(f"StrategySpec {field_name} must be an array of strings")
             return list(raw)
+
+        if archetype == "precomputed_ml":
+            declared_lines = normalized_feeds[0].get("lines", []) if normalized_feeds else []
+            custom = [
+                line
+                for line in declared_lines
+                if line
+                not in {"datetime", "open", "high", "low", "close", "volume", "openinterest"}
+            ]
+            if not custom:
+                raise InvalidRequest(
+                    "precomputed_ml requires at least one custom feature line in feeds[0].lines; "
+                    "without it the scaffold would silently degrade to a baseline SMA strategy"
+                )
+        analyzers = (value.get("extensions") or {}).get("analyzers")
+        if analyzers is not None:
+            allowed_analyzers = {"sqn", "calmar", "vwr", "timereturn"}
+            if (
+                not isinstance(analyzers, list)
+                or any(item not in allowed_analyzers for item in analyzers)
+                or len(set(analyzers)) != len(analyzers)
+            ):
+                raise InvalidRequest(
+                    "StrategySpec extensions.analyzers must be a unique subset of "
+                    "sqn, calmar, vwr, timereturn"
+                )
 
         parsed = cls(
             spec_version="strategy-spec-v1",
@@ -392,6 +428,7 @@ class StrategySpec:
             commission_value=float(commission),
             slippage_value=float(slippage),
             dataset_feed_names=tuple(dataset_feed_names),
+            seed=value.get("seed"),
         )
         object.__setattr__(parsed, "spec_hash", sha256_json(parsed.as_dict(include_hash=False)))
         return parsed

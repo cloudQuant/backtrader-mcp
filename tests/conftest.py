@@ -144,7 +144,100 @@ def registered_dataset(service_env):
     return service, dataset
 
 
+@pytest.fixture()
+def registered_ml_dataset(service_env):
+    """A dataset with a custom feature line for precomputed_ml strategies."""
+    service, source, _ = service_env
+    raw = (source / "prices.csv").read_text(encoding="utf-8")
+    lines = raw.splitlines()
+    enriched = [lines[0] + ",signal"] + [
+        line + f",{index % 7}" for index, line in enumerate(lines[1:], start=1)
+    ]
+    (source / "features.csv").write_text("\n".join(enriched) + "\n", encoding="utf-8")
+    columns = {
+        "datetime": "datetime",
+        "open": "open",
+        "high": "high",
+        "low": "low",
+        "close": "close",
+        "volume": "volume",
+        "signal": "signal",
+    }
+    core = {
+        "schema_version": "data-spec-v1",
+        "feeds": [
+            {
+                "name": "primary",
+                "role": "execution",
+                "symbol": "PRIMARY",
+                "source": {
+                    "root_id": "market",
+                    "relative_path": "features.csv",
+                    "source_type": "materialized_dataframe",
+                },
+                "format": "pandas_custom_lines",
+                "timeframe": "days",
+                "compression": 1,
+                "timezone": "UTC",
+                "columns": columns,
+                "lines": [
+                    "datetime",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "openinterest",
+                    "signal",
+                ],
+            }
+        ],
+        "master_feed": "primary",
+        "alignment": {"mode": "intersection", "minimum_overlap": 1.0},
+        "transforms": [],
+    }
+    dataset = service.register_local_dataset({**core, "spec_hash": sha256_json(core)})
+    return service, dataset
+
+
 def canonical_spec(dataset_id: str, archetype: str, profile: str = "python_bundle"):
+    # precomputed_ml fails fast without a custom feature line; declare the
+    # canonical "signal" line shared by the fixture datasets.
+    if archetype == "precomputed_ml":
+        spec = {
+            "spec_version": "strategy-spec-v1",
+            "name": f"{archetype} example",
+            "slug": f"{archetype.replace('_', '-')}-example",
+            "category": "strategy",
+            "archetype": archetype,
+            "output_profile": profile,
+            "dataset_id": dataset_id,
+            "feeds": [
+                {
+                    "name": "primary",
+                    "dataset_feed": "primary",
+                    "lines": [
+                        "datetime",
+                        "open",
+                        "high",
+                        "low",
+                        "close",
+                        "volume",
+                        "openinterest",
+                        "signal",
+                    ],
+                }
+            ],
+            "parameters": {"period": 5},
+            "entry": {"rule": "template"},
+            "exit": {"rule": "template"},
+            "sizing": {"mode": "fixed_fraction", "starting_cash": 100000.0},
+            "risk": {"commission": 0.001, "live_trading": False},
+            "run_modes": ["runonce", "runnext"],
+            "allowed_imports": ["backtrader"],
+        }
+        return spec
+
     feed_count = (
         2
         if archetype

@@ -65,10 +65,13 @@ def test_candidate_environment_enables_cloudquant_light_import_and_thread_caps()
 @pytest.mark.parametrize("profile", ["python_bundle", "single_test"])
 def test_distinct_run_approval_fixed_profile_and_report(
     registered_dataset,
+    registered_ml_dataset,
     archetype: str,
     profile: str,
 ):
-    service, dataset = registered_dataset
+    service, dataset = (
+        registered_ml_dataset if archetype == "precomputed_ml" else registered_dataset
+    )
     spec = canonical_spec(dataset["dataset_id"], archetype, profile)
     validated_spec = service.validate_strategy_spec(spec)
     assert validated_spec["status"] == "passed"

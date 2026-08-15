@@ -284,6 +284,8 @@ def _candidate_environment(
     feed_configs: list[dict[str, Any]],
     result_path: str | Path,
     mode: str,
+    seed: int | None = None,
+    analyzers: list[str] | None = None,
 ) -> dict[str, str]:
     """Return the deliberately small environment granted to a strategy candidate."""
 
@@ -307,6 +309,8 @@ def _candidate_environment(
             ),
             "BACKTRADER_MCP_RESULT": str(result_path),
             "BACKTRADER_MCP_RUN_MODE": mode,
+            "BACKTRADER_MCP_SEED": str(seed) if seed is not None else "",
+            "BACKTRADER_MCP_ANALYZERS": json.dumps(analyzers or [], sort_keys=True),
         }
     )
 
@@ -408,6 +412,8 @@ def run_worker(state_root: Path, job_id: str) -> int:
             feed_configs=feed_configs,
             result_path=result_path,
             mode=mode,
+            seed=job.get("seed"),
+            analyzers=job.get("analyzers"),
         )
         with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
             process = subprocess.Popen(

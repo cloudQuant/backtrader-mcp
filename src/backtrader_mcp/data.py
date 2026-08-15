@@ -48,6 +48,21 @@ TIMEFRAMES = {
 }
 
 
+def _validate_bar(row: dict[str, str], index: int) -> None:
+    """Reject non-positive prices and inconsistent OHLC bars at registration."""
+    try:
+        open_price = float(row["open"])
+        high = float(row["high"])
+        low = float(row["low"])
+        close = float(row["close"])
+    except (KeyError, ValueError):
+        return  # non-required columns are validated elsewhere
+    if min(open_price, high, low, close) <= 0:
+        raise InvalidRequest(f"row {index} has non-positive OHLC prices")
+    if high < low or high < max(open_price, close) or low > min(open_price, close):
+        raise InvalidRequest(f"row {index} has inconsistent OHLC prices")
+
+
 def _number(value: str, name: str) -> str:
     try:
         number = Decimal(value.strip())
@@ -286,6 +301,7 @@ class DatasetService:
                         raise InvalidRequest(
                             "datetime values must be unique and strictly increasing"
                         )
+                    _validate_bar(row, index)
                     previous_datetime = row["datetime"]
                     writer.writerow(row)
                     row_count += 1

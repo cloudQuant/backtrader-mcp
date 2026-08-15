@@ -22,10 +22,24 @@
     "spec_hash"
   ],
   "properties": {
-    "spec_version": {"const": "strategy-spec-v1"},
-    "name": {"type": "string", "minLength": 1, "maxLength": 120},
-    "slug": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 120},
-    "category": {"type": "string", "minLength": 1, "maxLength": 120},
+    "spec_version": {
+      "const": "strategy-spec-v1"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "maxLength": 120
+    },
+    "category": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
     "archetype": {
       "enum": [
         "single_data_indicator",
@@ -37,29 +51,63 @@
         "precomputed_ml"
       ]
     },
-    "output_profile": {"enum": ["single_test", "python_bundle"]},
-    "dataset_id": {"type": "string", "pattern": "^ds_[0-9a-f]{64}$"},
+    "output_profile": {
+      "enum": [
+        "single_test",
+        "python_bundle"
+      ]
+    },
+    "dataset_id": {
+      "type": "string",
+      "pattern": "^ds_[0-9a-f]{64}$"
+    },
     "feeds": {
       "type": "array",
       "minItems": 1,
       "maxItems": 32,
-      "items": {"$ref": "#/$defs/Feed"}
+      "items": {
+        "$ref": "#/$defs/Feed"
+      }
     },
     "parameters": {
       "type": "array",
       "maxItems": 64,
-      "items": {"$ref": "#/$defs/Parameter"}
+      "items": {
+        "$ref": "#/$defs/Parameter"
+      }
     },
-    "entry": {"$ref": "#/$defs/RuleReferences"},
-    "exit": {"$ref": "#/$defs/RuleReferences"},
-    "slippage": {"type": "number", "minimum": 0},
-    "sizing": {"type": "object"},
-    "risk": {"type": "object"},
-    "cash": {"type": "number", "exclusiveMinimum": 0},
-    "commission": {"type": "number", "minimum": 0},
+    "entry": {
+      "$ref": "#/$defs/RuleReferences"
+    },
+    "exit": {
+      "$ref": "#/$defs/RuleReferences"
+    },
+    "slippage": {
+      "type": "number",
+      "minimum": 0
+    },
+    "sizing": {
+      "type": "object"
+    },
+    "risk": {
+      "type": "object"
+    },
+    "cash": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "commission": {
+      "type": "number",
+      "minimum": 0
+    },
     "run_modes": {
       "type": "array",
-      "items": {"enum": ["runonce", "runnext"]},
+      "items": {
+        "enum": [
+          "runonce",
+          "runnext"
+        ]
+      },
       "minItems": 1,
       "maxItems": 2,
       "uniqueItems": true
@@ -68,61 +116,156 @@
       "type": "array",
       "items": {
         "enum": [
-          "backtrader", "collections", "datetime", "decimal",
-          "functools", "itertools", "math", "numpy", "statistics"
+          "backtrader",
+          "collections",
+          "datetime",
+          "decimal",
+          "functools",
+          "itertools",
+          "math",
+          "numpy",
+          "statistics"
         ]
       },
-      "contains": {"const": "backtrader"},
+      "contains": {
+        "const": "backtrader"
+      },
       "uniqueItems": true,
       "minItems": 1
     },
-    "non_goals": {"type": "array", "items": {"type": "string"}},
-    "undecided": {"type": "array", "items": {"type": "string"}},
-    "ir": {"type": "object"},
-    "extensions": {"type": "object"},
-    "spec_hash": {"$ref": "#/$defs/Hash"}
+    "non_goals": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "undecided": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "ir": {
+      "type": "object"
+    },
+    "extensions": {
+      "type": "object"
+    },
+    "spec_hash": {
+      "$ref": "#/$defs/Hash"
+    },
+    "seed": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 4294967295
+    }
   },
   "$defs": {
-    "Hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "Hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
     "Feed": {
       "type": "object",
-      "required": ["name", "role", "symbol", "timeframe", "lines"],
+      "required": [
+        "name",
+        "role",
+        "symbol",
+        "timeframe",
+        "lines"
+      ],
       "properties": {
-        "name": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$"},
-        "dataset_feed": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$"},
-        "role": {"enum": ["execution", "signal", "benchmark", "hedge", "cash_proxy"]},
-        "symbol": {"type": "string", "minLength": 1},
-        "timeframe": {"type": "string", "minLength": 1},
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
+        },
+        "dataset_feed": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
+        },
+        "role": {
+          "enum": [
+            "execution",
+            "signal",
+            "benchmark",
+            "hedge",
+            "cash_proxy"
+          ]
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timeframe": {
+          "type": "string",
+          "minLength": 1
+        },
         "lines": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$"}
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
+          }
         }
       },
       "additionalProperties": false
     },
     "Parameter": {
       "type": "object",
-      "required": ["name", "type", "default"],
+      "required": [
+        "name",
+        "type",
+        "default"
+      ],
       "properties": {
-        "name": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$"},
-        "type": {"enum": ["int", "float", "bool", "str"]},
-        "default": {"type": ["integer", "number", "boolean", "string"]},
-        "minimum": {"type": "number"},
-        "maximum": {"type": "number"}
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
+        },
+        "type": {
+          "enum": [
+            "int",
+            "float",
+            "bool",
+            "str"
+          ]
+        },
+        "default": {
+          "type": [
+            "integer",
+            "number",
+            "boolean",
+            "string"
+          ]
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number"
+        }
       },
       "additionalProperties": false
     },
     "RuleReferences": {
       "type": "object",
-      "required": ["rule_names"],
+      "required": [
+        "rule_names"
+      ],
       "properties": {
         "rule_names": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": {"type": "string", "minLength": 1}
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       },
       "additionalProperties": false
@@ -132,6 +275,8 @@
     "field": "spec_hash",
     "algorithm": "sha256",
     "canonicalization": "backtrader-canonical-json-v1",
-    "exclude": ["spec_hash"]
+    "exclude": [
+      "spec_hash"
+    ]
   }
 }
