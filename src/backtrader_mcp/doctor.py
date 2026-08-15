@@ -432,6 +432,17 @@ def doctor_report(settings: Settings) -> dict[str, Any]:
         issues.extend(runtime_issues)
 
     product_origin = Path(__file__).resolve().with_name("__init__.py")
+    jobs_stats = _jobs_stats(settings)
+    if jobs_stats is not None and "error" in jobs_stats:
+        issues.append(
+            {
+                "code": "state_unreadable",
+                "severity": "warning",
+                "subject": "jobs",
+                "message": jobs_stats["error"],
+                "suggestion": "check permissions on the private state root",
+            }
+        )
     return {
         "schema_version": "backtrader-mcp-doctor-v1",
         "status": ("failed" if any(issue["severity"] == "error" for issue in issues) else "passed"),
@@ -450,7 +461,7 @@ def doctor_report(settings: Settings) -> dict[str, Any]:
             "targets": target_roots,
         },
         "runtimes": runtimes,
-        "jobs": _jobs_stats(settings),
+        "jobs": jobs_stats,
         "capabilities": {
             "transport": "stdio",
             "offline_backtest_only": True,

@@ -401,6 +401,17 @@ class JobService:
                 self._assert_capacity()
                 self.state.consume_approval(approval_id, "run", run_plan_id, plan["run_plan_hash"])
                 job_id, job_root = self._create_job_record(plan, runtime, approval_id)
+                response = {
+                    "job_id": job_id,
+                    "run_id": job_id,
+                    "state": "QUEUED",
+                    "status_uri": f"backtrader-mcp://jobs/{job_id}",
+                    "result_uri": f"backtrader-mcp://jobs/{job_id}/result",
+                }
+                # Record idempotency inside the lock: a concurrent start with the
+                # same key must not create a second job before the record lands.
+                self.state.idempotent_put("start_strategy_run", idempotency_key, request, response)
+                self.state.audit("job.started", job_id, response)
         package_src = str(Path(__file__).resolve().parents[1])
         environment = platform_environment(
             {
@@ -434,31 +445,37 @@ class JobService:
             )
         except OSError as exc:
             error_message = f"worker launch failed: {exc}"
-            self.state.update(
-                "job",
-                job_id,
-                lambda current: {
-                    **current,
-                    "state": "FAILED",
-                    "finished_at": utc_now(),
-                    "error": error_message,
-                },
-            )
+            try:
+                self.state.update(
+                    "job",
+                    job_id,
+                    lambda current: {
+                        **current,
+                        "state": "FAILED",
+                        "finished_at": utc_now(),
+                        "error": error_message,
+                        "error_kind": "infrastructure",
+                    },
+                    expected=lambda current: current.get("state") in ACTIVE_STATES,
+                )
+            except Conflict:
+                pass
             raise InvalidRequest("could not launch the controlled worker") from exc
         finally:
             supervisor_stdout.close()
             supervisor_stderr.close()
-        self.state.update("job", job_id, lambda current: {**current, "worker_pid": process.pid})
+        try:
+            self.state.update(
+                "job",
+                job_id,
+                lambda current: {**current, "worker_pid": process.pid},
+                expected=lambda current: current.get("state") in ACTIVE_STATES,
+            )
+        except Conflict:
+            # The job was finalized between launch and the pid write; the worker
+            # itself will refuse to start (its RUNNING CAS requires QUEUED).
+            pass
         logger.info("job.started job_id=%s worker_pid=%s", job_id, process.pid)
-        response = {
-            "job_id": job_id,
-            "run_id": job_id,
-            "state": "QUEUED",
-            "status_uri": f"backtrader-mcp://jobs/{job_id}",
-            "result_uri": f"backtrader-mcp://jobs/{job_id}/result",
-        }
-        self.state.idempotent_put("start_strategy_run", idempotency_key, request, response)
-        self.state.audit("job.started", job_id, response)
         return response
 
     def get_run_status(self, job_id: str) -> dict[str, Any]:
@@ -478,6 +495,7 @@ class JobService:
                         },
                         expected=lambda current: current.get("state") in ACTIVE_STATES,
                     )
+                    self._cleanup_detached_candidate(job)
                     logger.warning("job.orphaned job_id=%s", job_id)
                 except Conflict:
                     # Another actor (worker or watchdog) finalized the job first;
@@ -589,6 +607,9 @@ class JobService:
                         "cancel_strategy_run", idempotency_key, request, response
                     )
                     return response
+                # Re-read after the CANCEL_REQUESTED CAS: the worker may have
+                # recorded a newer child_pid for a later execution mode.
+                job = self.state.get("job", job_id)
                 child_pid = job.get("child_pid")
                 worker_pid = job.get("worker_pid")
                 for pid in (child_pid, worker_pid):
@@ -614,7 +635,9 @@ class JobService:
                 response = {
                     "job_id": job_id,
                     "state": final["state"],
-                    "already_terminal": final["state"] in TERMINAL_STATES,
+                    # already_terminal means "was terminal before this call";
+                    # this call executed the cancellation.
+                    "already_terminal": False,
                 }
             self.state.idempotent_put("cancel_strategy_run", idempotency_key, request, response)
             self.state.audit("job.cancelled", job_id, response)
@@ -630,12 +653,18 @@ class JobService:
             )
         return job["result"]
 
+    def _cleanup_detached_candidate(self, job: dict[str, Any]) -> None:
+        """Terminate a detached candidate session; no-op for dead groups."""
+        child_pid = job.get("child_pid")
+        if isinstance(child_pid, int) and not isinstance(child_pid, bool):
+            terminate_pid(child_pid)
+
     def recover_jobs(self) -> list[str]:
         recovered: list[str] = []
         for job in self.state.list("job"):
             if job["state"] in ACTIVE_STATES and not _pid_alive(job.get("worker_pid")):
                 try:
-                    self.state.update(
+                    orphaned = self.state.update(
                         "job",
                         job["job_id"],
                         lambda current: {
@@ -649,6 +678,7 @@ class JobService:
                     )
                 except Conflict:
                     continue
+                self._cleanup_detached_candidate(orphaned)
                 recovered.append(job["job_id"])
                 logger.info("job.recovered job_id=%s", job["job_id"])
         return recovered
@@ -662,7 +692,9 @@ class JobService:
         worker_pid = job.get("worker_pid")
         if not _pid_alive(worker_pid):
             return "orphan"
-        started = _parse_iso(job.get("started_at"))
+        # QUEUED jobs anchor the wall clock at creation: a worker that hangs
+        # before its RUNNING write must not consume capacity forever.
+        started = _parse_iso(job.get("started_at")) or _parse_iso(job.get("created_at"))
         timeout = job.get("timeout_seconds")
         if started is not None and isinstance(timeout, (int, float)) and timeout > 0:
             deadline = started + timedelta(seconds=timeout + WATCHDOG_DEADLINE_GRACE_SECONDS)
@@ -676,8 +708,13 @@ class JobService:
             return "timeout"
         return None
 
-    def _enforce_watchdog_decision(self, job: dict[str, Any], decision: str) -> None:
-        """Kill leftover processes first, then persist the terminal state via CAS."""
+    def _enforce_watchdog_decision(self, job: dict[str, Any], decision: str) -> bool:
+        """Kill leftover processes first, then persist the terminal state via CAS.
+
+        Returns True when this call persisted the terminal state. The kill
+        itself is best-effort: if the job was finalized between the decision
+        and the CAS, the terminal state is preserved untouched.
+        """
         job_id = job["job_id"]
         child_pid = job.get("child_pid")
         worker_pid = job.get("worker_pid")
@@ -699,8 +736,8 @@ class JobService:
                     expected=lambda current: current.get("state") in ACTIVE_STATES,
                 )
             except Conflict:
-                pass
-            return
+                return False
+            return True
         if isinstance(child_pid, int) and not isinstance(child_pid, bool):
             # The worker is gone but its detached candidate session may survive;
             # terminate_pid is a harmless no-op when the group is already dead.
@@ -719,13 +756,18 @@ class JobService:
                 expected=lambda current: current.get("state") in ACTIVE_STATES,
             )
         except Conflict:
-            pass
+            return False
+        return True
 
     def watchdog_tick(self) -> dict[str, Any]:
         """One supervision pass over ACTIVE jobs (idempotent, CAS-guarded)."""
         enforced: list[dict[str, str]] = []
         for job in self.state.list("job"):
             if job.get("state") not in ACTIVE_STATES:
+                continue
+            if job.get("worker_pid") is None:
+                # Birth window: the server is between creating the job row and
+                # recording the worker pid; leave it alone.
                 continue
             job_id = job["job_id"]
             with self.locks.acquire(f"job:{job_id}"):
@@ -735,9 +777,9 @@ class JobService:
                 decision = self._watchdog_decision(current)
                 if decision is None:
                     continue
-                self._enforce_watchdog_decision(current, decision)
-                enforced.append({"job_id": job_id, "decision": decision})
-                logger.warning("watchdog.enforced job_id=%s decision=%s", job_id, decision)
+                if self._enforce_watchdog_decision(current, decision):
+                    enforced.append({"job_id": job_id, "decision": decision})
+                    logger.warning("watchdog.enforced job_id=%s decision=%s", job_id, decision)
         return {"enforced": enforced}
 
     def start_watchdog(self) -> "JobWatchdog":
@@ -745,28 +787,45 @@ class JobService:
 
     def clean_jobs(self, before_iso: str) -> dict[str, int]:
         """Delete terminal jobs finished before ``before_iso`` (rows and dirs)."""
+        cutoff = _parse_iso(before_iso)
+        if cutoff is None:
+            raise InvalidRequest(
+                "before must be an ISO date like YYYY-MM-DD or a full ISO timestamp",
+                suggestion="use YYYY-MM-DD to delete jobs finished before that date",
+            )
         removed_dirs = 0
         deleted_rows = 0
         for job in self.state.list("job"):
             if job.get("state") not in TERMINAL_STATES:
                 continue
-            finished = job.get("finished_at")
-            if not finished or finished >= before_iso:
+            finished = _parse_iso(job.get("finished_at"))
+            if finished is None or finished >= cutoff:
                 continue
             job_id = job["job_id"]
-            job_root = self.settings.state_root / "jobs" / job_id
-            if job_root.is_dir():
-                shutil.rmtree(job_root, ignore_errors=True)
-                removed_dirs += 1
-            self.state.delete("job", job_id)
-            deleted_rows += 1
-            logger.info("job.cleaned job_id=%s", job_id)
-        self.state.audit(
-            "clean.jobs",
-            None,
-            {"before": before_iso, "deleted_rows": deleted_rows, "removed_dirs": removed_dirs},
-        )
-        self.state.checkpoint()
+            if not isinstance(job_id, str) or not JOB_ID_PATTERN.match(job_id):
+                logger.warning("job.clean_skipped_invalid_id job_id=%r", job_id)
+                continue
+            with self.locks.acquire(f"job:{job_id}"):
+                job_root = self.settings.state_root / "jobs" / job_id
+                if job_root.is_dir():
+                    try:
+                        shutil.rmtree(job_root)
+                        removed_dirs += 1
+                    except OSError:
+                        logger.exception("job.clean_dir_failed job_id=%s", job_id)
+                        continue
+                self.state.delete("job", job_id)
+                deleted_rows += 1
+                logger.info("job.cleaned job_id=%s", job_id)
+        try:
+            self.state.audit(
+                "clean.jobs",
+                None,
+                {"before": before_iso, "deleted_rows": deleted_rows, "removed_dirs": removed_dirs},
+            )
+            self.state.checkpoint()
+        except Exception:
+            logger.exception("clean.jobs audit/checkpoint failed after deletion")
         return {"deleted_rows": deleted_rows, "removed_dirs": removed_dirs}
 
 
@@ -790,9 +849,11 @@ class JobWatchdog:
 
     def stop(self, timeout: float = 5.0) -> None:
         self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout)
-            self._thread = None
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout)
+            if not thread.is_alive():
+                self._thread = None
         logger.info("watchdog.stopped")
 
     def is_running(self) -> bool:

@@ -368,3 +368,83 @@ def test_cli_clean_jobs_kind_removes_expired_terminal_jobs(service_env):
     assert result["deleted_rows"] == 1
     assert result["removed_dirs"] == 1
     assert service.state.list("job") == []
+
+
+# ---------------------------------------------------------------------------
+# 审查补测：CAS 冲突重读、cancel 两段 CAS、worker 助手、clean 输入校验
+# ---------------------------------------------------------------------------
+
+
+def test_get_run_status_conflict_reports_latest_state(service_env, monkeypatch):
+    service, _, _ = service_env
+    job_id = "job_" + "e1" * 16
+    _put_job(service, job_id, state="RUNNING", worker_pid=99999990)
+    monkeypatch.setattr("backtrader_mcp.jobs._pid_alive", lambda pid: False)
+    original_update = service.state.update
+
+    def racing_update(kind, object_id, mutator, *, expected=None):
+        if kind == "job" and object_id == job_id and expected is not None:
+            # Watchdog wins the CAS first, then our orphan write conflicts.
+            original_update(
+                kind,
+                object_id,
+                lambda current: {
+                    **current,
+                    "state": "TIMED_OUT",
+                    "finished_at": _iso(0),
+                    "error": "watchdog deadline",
+                    "error_kind": "timeout",
+                },
+                expected=lambda current: current.get("state") in {"RUNNING", "QUEUED"},
+            )
+            raise Conflict(f"job precondition failed: {object_id}")
+        return original_update(kind, object_id, mutator, expected=expected)
+
+    monkeypatch.setattr(service.state, "update", racing_update)
+    status = service.get_run_status(job_id)
+    assert status["state"] == "TIMED_OUT"
+    assert status["error_kind"] == "timeout"
+
+
+def test_cancel_active_job_two_stage_cas(service_env, monkeypatch):
+    service, _, _ = service_env
+    job_id = "job_" + "e2" * 16
+    _put_job(service, job_id, state="RUNNING", worker_pid=12345, child_pid=12346)
+    monkeypatch.setattr("backtrader_mcp.jobs._pid_alive", lambda pid: True)
+    kills: list[int] = []
+    monkeypatch.setattr("backtrader_mcp.jobs.terminate_pid", lambda pid: kills.append(pid))
+    response = service.cancel_strategy_run(job_id, "idem-two-stage")
+    assert response["state"] == "CANCELLED"
+    assert response["already_terminal"] is False
+    assert set(kills) == {12345, 12346}
+    final = service.state.get("job", job_id)
+    assert final["state"] == "CANCELLED"
+    assert final["error_kind"] == "cancelled"
+
+
+def test_write_cancelled_requires_cancel_requested(service_env):
+    service, _, _ = service_env
+    job_id = "job_" + "e3" * 16
+    _put_job(service, job_id, state="RUNNING")
+    result = worker_module._write_cancelled(service.state, job_id, "cancelled late")
+    assert result is None
+    assert service.state.get("job", job_id)["state"] == "RUNNING"
+
+
+def test_heartbeat_ignores_terminal_jobs(service_env):
+    service, _, _ = service_env
+    job_id = "job_" + "e4" * 16
+    heartbeat_before = _iso(5)
+    _put_job(
+        service, job_id, state="SUCCEEDED", finished_at=_iso(10), heartbeat_at=heartbeat_before
+    )
+    worker_module._heartbeat(service.state, job_id)
+    final = service.state.get("job", job_id)
+    assert final["state"] == "SUCCEEDED"
+    assert final["heartbeat_at"] == heartbeat_before
+
+
+def test_clean_jobs_rejects_invalid_before(service_env):
+    service, _, _ = service_env
+    with pytest.raises(InvalidRequest, match="ISO date"):
+        service.jobs.clean_jobs("abc")
