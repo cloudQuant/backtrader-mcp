@@ -484,6 +484,24 @@ replayed, expired, or clock-skewed tokens are rejected. On Windows the lock
 layer falls back to `msvcrt` byte-range locking, but a real Windows host run
 has still not been recorded.
 
+## Related resources
+
+The CloudQuant Backtrader ecosystem:
+
+- [`cloudQuant/backtrader`](https://github.com/cloudQuant/backtrader) — the
+  pinned Backtrader runtime fork this product executes (commit
+  `3c967ed61be184c0099ba5bef55d4bed09ad0b4a`).
+- [`cloudQuant/backtrader-mcp`](https://github.com/cloudQuant/backtrader-mcp) —
+  this MCP server.
+- [`cloudQuant/backtrader-skills`](https://github.com/cloudQuant/backtrader-skills) —
+  companion skills for Backtrader workflows.
+- [`cloudQuant/backtrader_web`](https://github.com/cloudQuant/backtrader_web) —
+  companion web product.
+- [`cloudQuant/backtrader-agent`](https://github.com/cloudQuant/backtrader-agent) —
+  companion agent product.
+- [`cloudQuant/fincore`](https://github.com/cloudQuant/fincore) — FinCore,
+  companion financial infrastructure.
+
 ## Development and acceptance
 
 Run all commands from this directory:
@@ -932,6 +950,24 @@ host 运行结果。
 范围之外的审批守护进程之后。签名令牌现在携带一次性 nonce，在授权落地点
 （apply/start）原子消费；重放、过期或时钟偏移超窗的令牌一律被拒绝。Windows
 上锁层回退到 `msvcrt` 字节范围锁，但真实 Windows 宿主运行仍未记录。
+
+## 相关资源
+
+CloudQuant Backtrader 生态：
+
+- [`cloudQuant/backtrader`](https://github.com/cloudQuant/backtrader) —— 本产品
+  执行的固定 Backtrader 运行时 fork（commit
+  `3c967ed61be184c0099ba5bef55d4bed09ad0b4a`）。
+- [`cloudQuant/backtrader-mcp`](https://github.com/cloudQuant/backtrader-mcp) ——
+  本 MCP 服务器。
+- [`cloudQuant/backtrader-skills`](https://github.com/cloudQuant/backtrader-skills) ——
+  Backtrader 工作流的配套 skills。
+- [`cloudQuant/backtrader_web`](https://github.com/cloudQuant/backtrader_web) ——
+  配套 Web 产品。
+- [`cloudQuant/backtrader-agent`](https://github.com/cloudQuant/backtrader-agent) ——
+  配套 Agent 产品。
+- [`cloudQuant/fincore`](https://github.com/cloudQuant/fincore) —— FinCore，配套
+  金融基础设施。
 
 ## 开发与验收
 

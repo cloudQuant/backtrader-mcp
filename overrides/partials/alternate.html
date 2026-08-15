@@ -1,0 +1,42 @@
+{#-
+  Subpath-portable language switcher.
+
+  Material's default partial renders config.extra.alternate links that the
+  i18n plugin builds as ABSOLUTE paths (site_url path + /locale/). Absolute
+  links break when the site is hosted under a version subpath (Read the
+  Docs: /en/latest/). The plugin exposes per-page alternates via
+  page.file.alternates; rendering those through the ``url`` filter yields
+  relative hrefs that resolve correctly at any hosting depth.
+-#}
+<div class="md-header__option">
+  <div class="md-select">
+    {% set icon = config.theme.icon.alternate or "material/translate" %}
+    <button class="md-header__button md-icon" aria-label="{{ lang.t('select.language') }}">
+      {% include ".icons/" ~ icon ~ ".svg" %}
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        {% if i18n_config %}
+          {% for item in i18n_config.languages if item.build %}
+            {% set alt_file = page.file.alternates.get(item.locale) %}
+            {% if alt_file and item.locale != page.file.locale %}
+              <li class="md-select__item">
+                <a href="{{ alt_file.url | url }}" hreflang="{{ item.locale }}" class="md-select__link">
+                  {{ item.name }}
+                </a>
+              </li>
+            {% endif %}
+          {% endfor %}
+        {% else %}
+          {% for alt in config.extra.alternate %}
+            <li class="md-select__item">
+              <a href="{{ alt.link | url }}" hreflang="{{ alt.lang }}" class="md-select__link">
+                {{ alt.name }}
+              </a>
+            </li>
+          {% endfor %}
+        {% endif %}
+      </ul>
+    </div>
+  </div>
+</div>

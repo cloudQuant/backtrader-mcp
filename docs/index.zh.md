@@ -35,3 +35,20 @@ python -m backtrader_mcp --help
 
 然后配置四个 root 变量并在 MCP 宿主中注册服务器——见
 [安装](getting-started/installation.md) 与 [宿主配置](getting-started/hosts.md)。
+
+## 相关项目
+
+CloudQuant Backtrader 生态：
+
+- [`cloudQuant/backtrader`](https://github.com/cloudQuant/backtrader) —— 本产品
+  执行的固定 Backtrader 运行时 fork。
+- [`cloudQuant/backtrader-mcp`](https://github.com/cloudQuant/backtrader-mcp) ——
+  本 MCP 服务器。
+- [`cloudQuant/backtrader-skills`](https://github.com/cloudQuant/backtrader-skills) ——
+  Backtrader 工作流的配套 skills。
+- [`cloudQuant/backtrader_web`](https://github.com/cloudQuant/backtrader_web) ——
+  配套 Web 产品。
+- [`cloudQuant/backtrader-agent`](https://github.com/cloudQuant/backtrader-agent) ——
+  配套 Agent 产品。
+- [`cloudQuant/fincore`](https://github.com/cloudQuant/fincore) —— FinCore，配套
+  金融基础设施。

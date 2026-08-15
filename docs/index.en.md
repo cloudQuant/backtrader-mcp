@@ -43,3 +43,20 @@ python -m backtrader_mcp --help
 Then configure the four root variables and register the server with your MCP
 host — see [Installation](getting-started/installation.md) and
 [Host setup](getting-started/hosts.md).
+
+## Related projects
+
+The CloudQuant Backtrader ecosystem:
+
+- [`cloudQuant/backtrader`](https://github.com/cloudQuant/backtrader) — the
+  pinned Backtrader runtime fork this product executes.
+- [`cloudQuant/backtrader-mcp`](https://github.com/cloudQuant/backtrader-mcp) —
+  this MCP server.
+- [`cloudQuant/backtrader-skills`](https://github.com/cloudQuant/backtrader-skills) —
+  companion skills for Backtrader workflows.
+- [`cloudQuant/backtrader_web`](https://github.com/cloudQuant/backtrader_web) —
+  companion web product.
+- [`cloudQuant/backtrader-agent`](https://github.com/cloudQuant/backtrader-agent) —
+  companion agent product.
+- [`cloudQuant/fincore`](https://github.com/cloudQuant/fincore) — FinCore,
+  companion financial infrastructure.
