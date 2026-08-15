@@ -8,6 +8,7 @@ import sys
 from typing import Any, Sequence
 
 from .errors import NotFound, ProductError
+from .jobs import job_summary
 from .logging_config import configure_logging
 from .service import BacktraderMCPService
 from .settings import Settings
@@ -66,20 +67,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _summarize_job(job: dict[str, Any]) -> dict[str, Any]:
-    error = job.get("error") or ""
-    return {
-        "job_id": job.get("job_id"),
-        "state": job.get("state"),
-        "draft_id": job.get("draft_id"),
-        "run_profile_id": job.get("run_profile_id"),
-        "created_at": job.get("created_at"),
-        "started_at": job.get("started_at"),
-        "finished_at": job.get("finished_at"),
-        "error": error[:200],
-    }
-
-
 def _list_objects(
     service: BacktraderMCPService, kind: str, state_filter: str | None, limit: int
 ) -> dict[str, Any]:
@@ -93,7 +80,7 @@ def _list_objects(
         if kind == "job":
             if state_filter:
                 items = [job for job in items if job.get("state") == state_filter]
-            items = [_summarize_job(job) for job in items]
+            items = [job_summary(job) for job in items]
     return {"kind": kind, "count": len(items), "items": items[:limit]}
 
 

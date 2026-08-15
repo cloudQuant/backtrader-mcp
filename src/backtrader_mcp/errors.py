@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import functools
 import re
+from typing import Any, Callable, TypeVar
 
 # Absolute filesystem paths leaked into an error message (e.g. from a candidate
 # traceback) are redacted before the message crosses the MCP boundary. The
@@ -29,12 +31,57 @@ class ProductError(RuntimeError):
 
     code = "product_error"
 
-    def __init__(self, message: str):
+    def __init__(self, message: str, suggestion: str | None = None):
         super().__init__(message)
         self.message = message
+        self.suggestion = suggestion
+
+    def as_client_text(self) -> str:
+        """Structured, path-sanitized text for the MCP tool boundary."""
+        text = f"[{self.code}] {sanitize_for_client(self.message)}"
+        if self.suggestion:
+            text += f"\nSuggestion: {self.suggestion}"
+        return text
 
     def as_dict(self) -> dict[str, str]:
-        return {"code": self.code, "message": sanitize_for_client(self.message)}
+        result = {"code": self.code, "message": sanitize_for_client(self.message)}
+        if self.suggestion:
+            result["suggestion"] = self.suggestion
+        return result
+
+
+class ClientToolError(Exception):
+    """Exception whose text is already the client-facing structured message."""
+
+    def __init__(self, text: str):
+        super().__init__(text)
+        self.text = text
+
+    def __str__(self) -> str:
+        return self.text
+
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def client_safe(fn: _F) -> _F:
+    """Wrap a tool handler so failures cross the MCP boundary as structured,
+    path-sanitized error text.
+
+    The MCP SDK converts tool exceptions into ``CallToolResult(isError=True)``
+    with the exception's ``str()``; this wrapper controls exactly that text.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        except ProductError as exc:
+            raise ClientToolError(exc.as_client_text()) from exc
+        except Exception as exc:
+            raise ClientToolError(sanitize_for_client(str(exc))) from exc
+
+    return wrapper  # type: ignore[return-value]
 
 
 class InvalidRequest(ProductError):

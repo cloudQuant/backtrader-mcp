@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import uuid
@@ -13,7 +14,7 @@ from typing import Any
 from .backtrader_runtime import require_cloudquant_runtime
 from .data import DatasetService
 from .drafts import DraftService
-from .errors import Conflict, InvalidRequest, NotFound
+from .errors import Conflict, InvalidRequest, NotFound, sanitize_for_client
 from .locks import LockManager
 from .logging_config import get_logger
 from .process_control import is_posix, platform_environment, popen_group_options, terminate_pid
@@ -33,6 +34,60 @@ RUN_PROFILE_MODES = {
     "fixed_tests": ("runonce", "runnext"),
 }
 RUN_PROFILES = set(RUN_PROFILE_MODES)
+JOB_ID_PATTERN = re.compile(r"^job_[0-9a-f]{32}$")
+DEFAULT_LOG_TAIL_BYTES = 8000
+MAX_LOG_TAIL_BYTES = 25000
+
+
+def job_summary(job: dict[str, Any]) -> dict[str, Any]:
+    """Project a durable job payload into the stable list summary shape."""
+    error = job.get("error") or ""
+    return {
+        "job_id": job.get("job_id"),
+        "state": job.get("state"),
+        "draft_id": job.get("draft_id"),
+        "run_profile_id": job.get("run_profile_id"),
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "error": error[:200],
+    }
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _elapsed_seconds(job: dict[str, Any]) -> float | None:
+    created = _parse_iso(job.get("created_at"))
+    if created is None:
+        return None
+    finished = _parse_iso(job.get("finished_at"))
+    end = finished if finished is not None else datetime.now(timezone.utc)
+    return round(max(0.0, (end - created).total_seconds()), 3)
+
+
+def _eta_bound(job: dict[str, Any]) -> str | None:
+    if job.get("state") not in ACTIVE_STATES:
+        return None
+    started = _parse_iso(job.get("started_at"))
+    timeout = job.get("timeout_seconds")
+    if started is None or not isinstance(timeout, (int, float)) or timeout <= 0:
+        return None
+    return (started + timedelta(seconds=timeout)).isoformat()
+
+
+def _tail_bytes(path: Path, limit: int) -> str:
+    """Read the last ``limit`` bytes of a file without loading it fully."""
+    size = path.stat().st_size
+    with path.open("rb") as stream:
+        stream.seek(max(0, size - limit))
+        return stream.read().decode("utf-8", errors="replace")
 
 
 def _pid_alive(pid: int | None) -> bool:
@@ -380,7 +435,74 @@ class JobService:
                     },
                 )
                 logger.warning("job.orphaned job_id=%s", job_id)
-            return {key: value for key, value in job.items() if key not in {"runtime_root"}}
+            status = {key: value for key, value in job.items() if key not in {"runtime_root"}}
+            status["log_uri"] = f"backtrader-mcp://jobs/{job_id}/logs"
+            status["elapsed_seconds"] = _elapsed_seconds(job)
+            status["eta_bound"] = _eta_bound(job)
+            return status
+
+    def list_jobs(
+        self, state_filter: str | None = None, limit: int = 50, offset: int = 0
+    ) -> dict[str, Any]:
+        valid_states = sorted(TERMINAL_STATES | ACTIVE_STATES | {"active"})
+        if state_filter is not None and state_filter not in valid_states:
+            raise InvalidRequest(
+                f"unknown job state: {state_filter}; valid states: {', '.join(valid_states)}"
+            )
+        if not isinstance(limit, int) or limit < 1 or limit > 100:
+            raise InvalidRequest("job list limit must be between 1 and 100")
+        if not isinstance(offset, int) or offset < 0:
+            raise InvalidRequest("job list offset must be a non-negative integer")
+        jobs = sorted(
+            self.state.list("job"),
+            key=lambda job: job.get("created_at", ""),
+            reverse=True,
+        )
+        if state_filter == "active":
+            jobs = [job for job in jobs if job.get("state") in ACTIVE_STATES]
+        elif state_filter is not None:
+            jobs = [job for job in jobs if job.get("state") == state_filter]
+        total = len(jobs)
+        page = jobs[offset : offset + limit]
+        return {
+            "schema_version": "job-list-v1",
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(page) < total,
+            "jobs": [job_summary(job) for job in page],
+        }
+
+    def get_job_logs(
+        self, job_id: str, tail_bytes: int = DEFAULT_LOG_TAIL_BYTES
+    ) -> dict[str, Any]:
+        if not isinstance(job_id, str) or not JOB_ID_PATTERN.match(job_id):
+            raise InvalidRequest("job_id must match the job_<32 hex characters> format")
+        if (
+            not isinstance(tail_bytes, int)
+            or tail_bytes < 1
+            or tail_bytes > MAX_LOG_TAIL_BYTES
+        ):
+            raise InvalidRequest(f"tail_bytes must be between 1 and {MAX_LOG_TAIL_BYTES}")
+        job = self.state.get("job", job_id)
+        job_root = self.settings.state_root / "jobs" / job_id
+        files: dict[str, dict[str, Any]] = {}
+        for path in sorted(job_root.glob("*.log")):
+            if not path.is_file():
+                continue
+            size = path.stat().st_size
+            files[path.name] = {
+                "size_bytes": size,
+                "truncated": size > tail_bytes,
+                "content": sanitize_for_client(_tail_bytes(path, tail_bytes)),
+            }
+        return {
+            "schema_version": "job-logs-v1",
+            "job_id": job_id,
+            "state": job["state"],
+            "tail_bytes": tail_bytes,
+            "files": files,
+        }
 
     def cancel_strategy_run(self, job_id: str, idempotency_key: str) -> dict[str, Any]:
         request = {"job_id": job_id}

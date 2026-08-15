@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
+import pytest
+
+from backtrader_mcp.catalog import ARCHETYPES
+from backtrader_mcp.errors import InvalidRequest
 from backtrader_mcp.service import BacktraderMCPService
 from backtrader_mcp.settings import Settings
 
@@ -19,7 +24,12 @@ def test_packaged_catalog_has_full_verified_metadata_and_fourteen_templates(serv
     snapshot = service.get_catalog_snapshot()
     assert snapshot["extensions"]["counts"] == EXPECTED_COUNTS
     assert snapshot["extensions"]["entry_count"] == 1155
-    assert len(snapshot["entries"]) == 1155
+    assert "entries" not in snapshot
+    full_page = service.get_catalog_snapshot(include_entries=True, limit=100)
+    assert full_page["pagination"]["total"] == 1155
+    assert len(full_page["entries"]) == 100
+    assert full_page["pagination"]["has_more"] is True
+    assert full_page["pagination"]["truncated"] is True
     assert service.list_strategy_templates()["count"] == 14
 
     results = service.search_strategy_catalog(
@@ -104,3 +114,62 @@ def test_source_attached_dual_corpus_refresh_is_read_only_and_detects_staleness(
 
     strategy_path.write_text(strategy_path.read_text(encoding="utf-8") + "# changed\n")
     assert service.inspect_strategy(entry["id"])["status"] == "stale"
+
+
+def test_snapshot_default_response_is_small(service_env):
+    service, _, _ = service_env
+    payload = json.dumps(service.get_catalog_snapshot(), sort_keys=True)
+    assert len(payload.encode("utf-8")) < 1024
+
+
+def test_snapshot_pagination_pages_through_all_entries(service_env):
+    service, _, _ = service_env
+    seen = []
+    offset = 0
+    while True:
+        page = service.get_catalog_snapshot(include_entries=True, limit=100, offset=offset)
+        seen.extend(page["entries"])
+        if not page["pagination"]["has_more"]:
+            break
+        offset += len(page["entries"])
+    assert len(seen) == 1155
+    assert len({entry["id"] for entry in seen}) == 1155
+
+
+def test_snapshot_pagination_validates_bounds(service_env):
+    service, _, _ = service_env
+    with pytest.raises(InvalidRequest):
+        service.get_catalog_snapshot(include_entries=True, limit=0)
+    with pytest.raises(InvalidRequest):
+        service.get_catalog_snapshot(include_entries=True, limit=101)
+    with pytest.raises(InvalidRequest):
+        service.get_catalog_snapshot(include_entries=True, offset=-1)
+
+
+def test_search_pagination_metadata(service_env):
+    service, _, _ = service_env
+    page = service.search_strategy_catalog("", limit=3, offset=100)
+    assert page["total"] >= 1155
+    assert page["offset"] == 100
+    assert page["has_more"] is True
+    assert len(page["entries"]) == 3
+    tail = service.search_strategy_catalog("", limit=10, offset=page["total"] - 5)
+    assert len(tail["entries"]) == 5
+    assert tail["has_more"] is False
+
+
+def test_search_empty_result_has_actionable_guidance(service_env):
+    service, _, _ = service_env
+    result = service.search_strategy_catalog("zzzznopequerty", limit=5)
+    assert result["entries"] == []
+    assert result["total"] == 0
+    assert result["has_more"] is False
+    suggestions = result["suggestions"]
+    assert "hint" in suggestions
+    assert set(suggestions["valid_archetypes"]) == set(ARCHETYPES)
+
+
+def test_search_unknown_archetype_enumerates_valid_values(service_env):
+    service, _, _ = service_env
+    with pytest.raises(InvalidRequest, match="valid archetypes"):
+        service.search_strategy_catalog("", archetype="nope")
