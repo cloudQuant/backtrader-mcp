@@ -219,9 +219,7 @@ def _nested_site_packages(tmp_path: Path, origin_url: str) -> Path:
     checkout = tmp_path / "product-checkout"
     checkout.mkdir()
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
-    subprocess.run(
-        ["git", "-C", str(checkout), "remote", "add", "origin", origin_url], check=True
-    )
+    subprocess.run(["git", "-C", str(checkout), "remote", "add", "origin", origin_url], check=True)
     site_packages = checkout / ".runtime" / "lib" / "python3.12" / "site-packages"
     package = site_packages / "backtrader"
     package.mkdir(parents=True)
@@ -229,9 +227,7 @@ def _nested_site_packages(tmp_path: Path, origin_url: str) -> Path:
     return site_packages
 
 
-def test_installed_root_inside_foreign_checkout_uses_distribution_provenance(
-    monkeypatch, tmp_path
-):
+def test_installed_root_inside_foreign_checkout_uses_distribution_provenance(monkeypatch, tmp_path):
     """A nested venv must not inherit the enclosing checkout's Git origin."""
     site_packages = _nested_site_packages(
         tmp_path, "https://github.com/cloudQuant/backtrader-mcp.git"
@@ -262,8 +258,15 @@ def test_unrelated_checkout_root_is_still_rejected(monkeypatch, tmp_path):
     checkout.mkdir()
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
     subprocess.run(
-        ["git", "-C", str(checkout), "remote", "add", "origin",
-         "https://github.com/other/backtrader-fork.git"],
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/other/backtrader-fork.git",
+        ],
         check=True,
     )
     monkeypatch.setattr(
