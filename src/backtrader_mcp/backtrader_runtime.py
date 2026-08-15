@@ -188,13 +188,17 @@ def inspect_runtime_root(root: Path) -> dict[str, Any]:
     resolved = root.expanduser().resolve(strict=False)
     repository = _repository_id(_git_remote_url(resolved))
     provenance = "git_remote" if repository is not None else "unavailable"
-    if repository is None:
-        installed = inspect_installed_backtrader()
-        if installed["root"] == str(resolved):
-            repository_value = installed["repository"]
-            repository = repository_value if isinstance(repository_value, str) else None
-            provenance_value = installed["provenance"]
-            provenance = provenance_value if isinstance(provenance_value, str) else provenance
+    installed = inspect_installed_backtrader()
+    if installed["root"] == str(resolved):
+        # A registered root that IS the active installed package must be judged
+        # by its distribution provenance (direct_url.json or the source
+        # checkout's origin). A ``git -C`` probe can instead discover an
+        # unrelated enclosing repository, e.g. a venv nested inside the product
+        # checkout, and misidentify the runtime.
+        repository_value = installed["repository"]
+        repository = repository_value if isinstance(repository_value, str) else repository
+        provenance_value = installed["provenance"]
+        provenance = provenance_value if isinstance(provenance_value, str) else provenance
     return _identity(
         installed=resolved.is_dir(),
         root=resolved,

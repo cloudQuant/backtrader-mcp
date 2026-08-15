@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.metadata
+import json
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,65 @@ from mcp.client import Client
 from backtrader_mcp import __version__
 from backtrader_mcp.server import create_server
 from backtrader_mcp.settings import Settings
+
+EXPECTED_TOOLS = {
+    "doctor",
+    "inspect_dataset",
+    "register_dataset",
+    "register_local_dataset",
+    "preview_dataset",
+    "derive_tabular_dataset",
+    "get_catalog_snapshot",
+    "search_strategy_catalog",
+    "refresh_strategy_catalog",
+    "inspect_strategy",
+    "list_strategy_templates",
+    "create_strategy_draft",
+    "validate_strategy_spec",
+    "get_strategy_draft",
+    "update_strategy_draft",
+    "validate_strategy_draft",
+    "apply_strategy_repair",
+    "prepare_strategy_changes",
+    "apply_strategy_changes",
+    "prepare_strategy_run",
+    "start_strategy_run",
+    "get_run_status",
+    "cancel_strategy_run",
+    "get_run_result",
+    "list_jobs",
+    "get_run_logs",
+    "compare_strategy_runs",
+    "render_strategy_report",
+    "audit_independence",
+}
+
+EXPECTED_RESOURCE_URIS = {
+    "backtrader-mcp://product/info",
+    "backtrader-mcp://catalog/snapshot",
+    "backtrader-mcp://strategy/templates",
+    "backtrader-mcp://strategy/contract",
+}
+
+EXPECTED_RESOURCE_TEMPLATE_URIS = {
+    "backtrader-mcp://contracts/{schema_name}",
+    "backtrader-mcp://datasets/{dataset_id}",
+    "backtrader-mcp://drafts/{draft_id}",
+    "backtrader-mcp://jobs/{job_id}",
+    "backtrader-mcp://jobs/{job_id}/result",
+    "backtrader-mcp://jobs/{job_id}/logs",
+}
+
+EXPECTED_PROMPTS = {
+    "design_strategy",
+    "map_dataset",
+    "scaffold_strategy",
+    "review_validation",
+    "review_change",
+    "run_backtest",
+    "review_run_result",
+    "recover_job",
+}
 
 
 def _create_synthetic_runtime(tmp_path: Path) -> Path:
@@ -48,29 +108,71 @@ def test_mcp_v2_typed_surface(tmp_path):
         assert server.version == __version__
         async with Client(server) as client:
             tools = await client.list_tools()
-            names = {tool.name for tool in tools.tools}
-            assert {
-                "doctor",
-                "validate_strategy_spec",
-                "refresh_strategy_catalog",
-                "apply_strategy_repair",
-                "prepare_strategy_changes",
-                "apply_strategy_changes",
-                "prepare_strategy_run",
-                "start_strategy_run",
-                "get_run_status",
-                "cancel_strategy_run",
-                "compare_strategy_runs",
-                "render_strategy_report",
-            } <= names
-            result = await client.call_tool("get_catalog_snapshot", {})
-            assert not result.is_error
+            by_name = {tool.name: tool for tool in tools.tools}
+            assert set(by_name) == EXPECTED_TOOLS
+            assert by_name["get_run_status"].annotations.read_only_hint is True
+            assert by_name["preview_dataset"].annotations.read_only_hint is True
+            assert by_name["apply_strategy_changes"].annotations.read_only_hint is False
+            assert by_name["apply_strategy_changes"].annotations.destructive_hint is True
+            assert by_name["cancel_strategy_run"].annotations.destructive_hint is True
+            assert by_name["start_strategy_run"].annotations.idempotent_hint is True
+            assert by_name["doctor"].annotations.open_world_hint is True
+            assert by_name["get_run_logs"].annotations.read_only_hint is True
+
+            snapshot = await client.call_tool("get_catalog_snapshot", {})
+            assert not snapshot.is_error
+            snapshot_content = json.loads(snapshot.content[0].text)
+            assert "entries" not in snapshot_content
+            assert snapshot_content["extensions"]["entry_count"] == 1155
+            paged = await client.call_tool(
+                "get_catalog_snapshot", {"include_entries": True, "limit": 5}
+            )
+            assert not paged.is_error
+            paged_content = json.loads(paged.content[0].text)
+            assert len(paged_content["entries"]) == 5
+            assert paged_content["pagination"]["has_more"] is True
+            assert paged_content["pagination"]["total"] == 1155
+
             prompts = await client.list_prompts()
-            assert len(prompts.prompts) == 8
+            assert {prompt.name for prompt in prompts.prompts} == EXPECTED_PROMPTS
             resources = await client.list_resources()
             resource_uris = {str(resource.uri) for resource in resources.resources}
-            assert "backtrader-mcp://strategy/templates" in resource_uris
-            assert "backtrader-mcp://strategy/contract" in resource_uris
+            assert resource_uris == EXPECTED_RESOURCE_URIS
+            templates = await client.list_resource_templates()
+            template_uris = {
+                str(template.uri_template) for template in templates.resource_templates
+            }
+            assert template_uris == EXPECTED_RESOURCE_TEMPLATE_URIS
+            read = await client.read_resource("backtrader-mcp://product/info")
+            assert json.loads(read.contents[0].text)["name"] == "backtrader-mcp"
+
+    asyncio.run(exercise())
+
+
+def test_mcp_v2_error_results_are_structured_and_sanitized(tmp_path):
+    async def exercise():
+        settings = Settings(
+            state_root=tmp_path / "state",
+            source_roots={},
+            target_roots={},
+            runtimes={},
+        )
+        server = create_server(settings)
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "preview_dataset", {"dataset_id": "ds_missing", "limit": 0}
+            )
+            assert result.is_error
+            text = result.content[0].text
+            assert "[invalid_request]" in text
+            assert "between 1 and" in text
+            search_result = await client.call_tool(
+                "search_strategy_catalog", {"query": "", "limit": 0}
+            )
+            assert search_result.is_error
+            assert "[invalid_request]" in search_result.content[0].text
+            with pytest.raises(Exception, match="allowed values"):
+                await client.read_resource("backtrader-mcp://contracts/nope")
 
     asyncio.run(exercise())
 

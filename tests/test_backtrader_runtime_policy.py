@@ -212,3 +212,73 @@ def test_distribution_requires_the_pinned_cloudquant_backtrader_source():
         for dependency in project["optional-dependencies"]["test"]
     )
     assert configuration["tool"]["hatch"]["metadata"]["allow-direct-references"] is True
+
+
+def _nested_site_packages(tmp_path: Path, origin_url: str) -> Path:
+    """Create a venv-like site-packages nested inside a git checkout."""
+    checkout = tmp_path / "product-checkout"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "remote", "add", "origin", origin_url], check=True
+    )
+    site_packages = checkout / ".runtime" / "lib" / "python3.12" / "site-packages"
+    package = site_packages / "backtrader"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("__version__ = '1.3.0'\n", encoding="utf-8")
+    return site_packages
+
+
+def test_installed_root_inside_foreign_checkout_uses_distribution_provenance(
+    monkeypatch, tmp_path
+):
+    """A nested venv must not inherit the enclosing checkout's Git origin."""
+    site_packages = _nested_site_packages(
+        tmp_path, "https://github.com/cloudQuant/backtrader-mcp.git"
+    )
+    monkeypatch.setattr(
+        runtime_policy,
+        "inspect_installed_backtrader",
+        lambda: {
+            "installed": True,
+            "trusted": True,
+            "root": str(site_packages),
+            "package_marker": True,
+            "version": "1.3.0",
+            "repository": "github.com/cloudquant/backtrader",
+            "provenance": "direct_url_vcs",
+            "reason": None,
+        },
+    )
+    identity = runtime_policy.inspect_runtime_root(site_packages)
+    assert identity["trusted"] is True
+    assert identity["repository"] == "github.com/cloudquant/backtrader"
+    assert identity["provenance"] == "direct_url_vcs"
+    assert runtime_policy.require_cloudquant_runtime(site_packages) == site_packages.resolve()
+
+
+def test_unrelated_checkout_root_is_still_rejected(monkeypatch, tmp_path):
+    checkout = tmp_path / "other-fork"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "remote", "add", "origin",
+         "https://github.com/other/backtrader-fork.git"],
+        check=True,
+    )
+    monkeypatch.setattr(
+        runtime_policy,
+        "inspect_installed_backtrader",
+        lambda: {
+            "installed": True,
+            "trusted": True,
+            "root": str(tmp_path / "elsewhere"),
+            "package_marker": True,
+            "version": "1.3.0",
+            "repository": "github.com/cloudquant/backtrader",
+            "provenance": "direct_url_vcs",
+            "reason": None,
+        },
+    )
+    with pytest.raises(InvalidRequest, match="cloudQuant/backtrader"):
+        runtime_policy.require_cloudquant_runtime(checkout)
