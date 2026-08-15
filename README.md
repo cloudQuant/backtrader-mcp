@@ -25,6 +25,13 @@ transports.
   `get_run_status`, `cancel_strategy_run`, and `get_run_result` tools. MCP SDK
   v2.0.0 does not provide the Tasks extension, so this product does not claim
   it.
+- Observability tools: `list_jobs` (state-filtered job enumeration) and
+  `get_run_logs` (bounded, path-sanitized job log tails); `get_run_status`
+  reports `log_uri`, `elapsed_seconds`, and `eta_bound`.
+- All 29 tools carry readOnlyHint/destructiveHint/idempotentHint/openWorldHint
+  annotations. Tool errors cross the MCP boundary as structured
+  `[code] message` text with an optional `Suggestion:` next step; absolute
+  filesystem paths in error text and job logs are redacted.
 
 The wheel includes seven JSON Schema contracts under
 `backtrader_mcp/schemas/` and the deterministic comparison policy under
@@ -98,12 +105,16 @@ available.
 
 ## Catalog modes
 
-The default `snapshot` mode reads only
-`backtrader_mcp/catalog_snapshot.jsonl` from this distribution. Every one of
-its 1,155 records has `source_available=false`: search and provenance are
+`get_catalog_snapshot` returns the slim header by default: counts, hashes,
+provenance, and `extensions.entry_count`, without the 1,155-record entry list.
+Set `include_entries=true` to page through entries with `limit` (1-100) and
+`offset`; the response reports `pagination.total`/`has_more`/`truncated`.
+Every record has `source_available=false`: search and provenance are
 available, but `inspect_strategy` does not pretend that the original source
-bytes were shipped. `list_strategy_templates` independently returns all 14
-current-fork archetype/profile templates.
+bytes were shipped. `list_strategy_templates` (tool and resource) independently
+returns all 14 current-fork archetype/profile templates.
+`search_strategy_catalog` reports `total`/`has_more`/`offset` pagination
+metadata and actionable empty-result suggestions.
 
 For an explicit source-attached rebuild, register the functional and package
 corpora as two read-only IDs in `BACKTRADER_MCP_SOURCE_ROOTS`, then call:
@@ -310,9 +321,13 @@ manager after deactivation.
     be reused for one another.
 
 14. `start_strategy_run` accepts only that run plan ID, signed run token,
-    execution approval ID, and a new idempotency key. Poll `get_run_status`;
-    optionally call `cancel_strategy_run`; read the normalized JSON and
-    Markdown report with `get_run_result`.
+    execution approval ID, and a new idempotency key. Poll `get_run_status`
+    every 2-5 seconds until a terminal state (it reports `log_uri`,
+    `elapsed_seconds`, and `eta_bound`); optionally call `cancel_strategy_run`;
+    read the normalized JSON and Markdown report with `get_run_result`. Use
+    `list_jobs` to recover job IDs across sessions. On
+    FAILED/TIMED_OUT/ORPHANED, read the bounded sanitized tails with
+    `get_run_logs` before changing the strategy.
 
 Job states are `QUEUED`, `RUNNING`, `CANCEL_REQUESTED`, `CANCELLED`,
 `SUCCEEDED`, `FAILED`, `TIMED_OUT`, and `ORPHANED`.
@@ -461,6 +476,12 @@ Python 执行或网络传输。
 - 产品自有的 `prepare_strategy_run`、`start_strategy_run`、
   `get_run_status`、`cancel_strategy_run` 和 `get_run_result` 工具。MCP SDK
   v2.0.0 不提供 Tasks 扩展，因此本产品也不声称支持。
+- 可观测性工具：`list_jobs`（按状态过滤的作业枚举）与 `get_run_logs`（有界、
+  绝对路径脱敏的作业日志尾部）；`get_run_status` 返回 `log_uri`、
+  `elapsed_seconds` 和 `eta_bound`。
+- 全部 29 个工具都带有 readOnlyHint/destructiveHint/idempotentHint/
+  openWorldHint 注解。工具错误以结构化 `[code] 消息` 文本跨越 MCP 边界，可选
+  附带 `Suggestion:` 下一步建议；错误文本与作业日志中的绝对文件系统路径会被脱敏。
 
 wheel 在 `backtrader_mcp/schemas/` 下包含七个 JSON Schema 契约，在
 `backtrader_mcp/policies/` 下包含确定性比较策略。它还内置自己的不可变完整元数据
@@ -525,11 +546,14 @@ CloudQuant 已安装包会显示 warning；已配置的非 CloudQuant 运行时�
 
 ## Catalog 模式
 
-默认的 `snapshot` 模式只读取本分发中的
-`backtrader_mcp/catalog_snapshot.jsonl`。它全部 1,155 条记录的
+`get_catalog_snapshot` 默认只返回精简 header：计数、哈希、溯源以及
+`extensions.entry_count`，不含 1,155 条记录列表。设置 `include_entries=true` 可
+以用 `limit`（1-100）与 `offset` 分页获取条目；响应会报告
+`pagination.total`/`has_more`/`truncated`。全部记录的
 `source_available=false`：搜索和溯源可用，但 `inspect_strategy` 不会假装原始源
-码字节随包分发。`list_strategy_templates` 则独立返回当前 fork 的全部 14 条
-archetype / profile 模板。
+码字节随包分发。`list_strategy_templates`（工具与资源两种形态）独立返回当前
+fork 的全部 14 条 archetype / profile 模板。`search_strategy_catalog` 返回
+`total`/`has_more`/`offset` 分页元数据以及可操作的空结果建议。
 
 若要显式重建带源码的快照，把 functional 和 package 两个语料以两个只读 ID 注册到
 `BACKTRADER_MCP_SOURCE_ROOTS`，然后调用：
@@ -714,8 +738,11 @@ python -m pip uninstall backtrader-mcp
     change 审批和 run 审批的 subject type 不同，不能互相复用。
 
 14. `start_strategy_run` 只接受该 run plan ID、签名 run token、执行审批 ID 和一个新
-    的幂等键。轮询 `get_run_status`；可选调用 `cancel_strategy_run`；用
-    `get_run_result` 读取归一化的 JSON 和 Markdown 报告。
+    的幂等键。每 2-5 秒轮询一次 `get_run_status` 直到终态（响应含 `log_uri`、
+    `elapsed_seconds` 与 `eta_bound`）；可选调用 `cancel_strategy_run`；用
+    `get_run_result` 读取归一化的 JSON 和 Markdown 报告。跨会话找回 job ID 用
+    `list_jobs`。FAILED/TIMED_OUT/ORPHANED 时，先用 `get_run_logs` 读取有界脱敏
+    日志尾部，再修改策略。
 
 作业状态为 `QUEUED`、`RUNNING`、`CANCEL_REQUESTED`、`CANCELLED`、`SUCCEEDED`、
 `FAILED`、`TIMED_OUT` 和 `ORPHANED`。
