@@ -7,14 +7,22 @@ from pathlib import Path
 
 import pytest
 
-if not importlib.metadata.version("mcp").startswith("2."):
-    pytest.skip("protocol test requires isolated mcp==2.0.0", allow_module_level=True)
+_MCP_VERSION = importlib.metadata.version("mcp")
+if not (
+    _MCP_VERSION.startswith("2.") and tuple(int(p) for p in _MCP_VERSION.split(".")[:2]) == (2, 0)
+):
+    pytest.skip(
+        "protocol tests require the verified mcp==2.0.0 target; install the "
+        "pinned closure (pip install -c constraints/requirements-v2.txt '.[test]') "
+        "or run the clean-wheel acceptance",
+        allow_module_level=True,
+    )
 
-from mcp.client import Client
+from mcp.client import Client  # noqa: E402
 
-from backtrader_mcp import __version__
-from backtrader_mcp.server import create_server
-from backtrader_mcp.settings import Settings
+from backtrader_mcp import __version__  # noqa: E402
+from backtrader_mcp.server import create_server  # noqa: E402
+from backtrader_mcp.settings import Settings  # noqa: E402
 
 EXPECTED_TOOLS = {
     "doctor",

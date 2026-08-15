@@ -7,7 +7,7 @@ name = "backtrader-mcp"
 dynamic = ["version"]
 description = "Local-first MCP server for safe, reproducible Backtrader strategy development"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
 license = {file = "LICENSE"}
 authors = [{name = "cloudQuant"}]
 dependencies = [
@@ -41,6 +41,9 @@ packages = ["src/backtrader_mcp"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra -p no:xdist --cov=backtrader_mcp --cov-report=term-missing"
+markers = [
+    "acceptance: slow end-to-end matrix executed in the distribution job",
+]
 
 [tool.coverage.run]
 source = ["src/backtrader_mcp"]
@@ -51,11 +54,9 @@ omit = [
   "src/backtrader_mcp/__main__.py",
   # Executed in a controlled subprocess; behavior is verified end-to-end by
   # tests/test_acceptance_matrix.py and tests/test_jobs_reports_recovery.py.
+  # Subprocess coverage merging (COVERAGE_PROCESS_START) is a recorded
+  # follow-up item.
   "src/backtrader_mcp/worker.py",
-  "src/backtrader_mcp/feed_runtime.py",
-  # MCP tool/resource/prompt surface; exercised by tests/test_protocol_v2.py
-  # under an isolated mcp==2.0.0 target (skipped in the default environment).
-  "src/backtrader_mcp/server.py",
 ]
 
 [tool.coverage.report]
