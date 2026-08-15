@@ -345,9 +345,13 @@ process groups. Jobs report a structured `error_kind`
 resource cap or a supervision decision.
 
 The concurrency cap rejects instead of queueing: `start_strategy_run` fails
-with an actionable suggestion when `max_concurrent_jobs` is reached. Remove
-finished job records and directories with `backtrader-mcp clean --kind jobs
---before YYYY-MM-DD`.
+with an actionable suggestion when `max_concurrent_jobs` is reached.
+Retention: `backtrader-mcp clean --kind jobs|cas|drafts|approvals --before
+YYYY-MM-DD` removes finished job records, unreferenced CAS objects,
+unreferenced drafts, and consumed/expired approvals respectively. Dataset
+registration streams row-by-row (bounded memory), deduplicates identical
+sources without re-parsing, and catalog refresh reuses an (mtime,size)
+fingerprint cache.
 
 Successful results contain exactly eleven canonical metrics:
 `bar_num`, `buy_count`, `sell_count`, `win_count`, `loss_count`, `trade_num`,
@@ -777,8 +781,10 @@ python -m pip uninstall backtrader-mcp
 `cancelled`/`orphaned`），让客户端能区分策略 bug、资源封顶与监督决策。
 
 并发上限是"拒绝而非排队"：达到 `max_concurrent_jobs` 时
-`start_strategy_run` 失败并附可操作建议。用 `backtrader-mcp clean --kind
-jobs --before YYYY-MM-DD` 删除已结束的作业记录与目录。
+`start_strategy_run` 失败并附可操作建议。保留策略：`backtrader-mcp clean
+--kind jobs|cas|drafts|approvals --before YYYY-MM-DD` 分别删除已结束的作业记录、
+未被引用的 CAS 对象、未被引用的草稿、已消费或已过期的审批。数据集注册逐行
+流式处理（有界内存）、相同源免重解析去重，目录刷新复用 (mtime,size) 指纹缓存。
 
 成功结果恰好包含 11 个规范指标：`bar_num`、`buy_count`、`sell_count`、
 `win_count`、`loss_count`、`trade_num`、`final_value`、`sharpe_ratio`、

@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   values.
 - Tool annotations (readOnlyHint/destructiveHint/idempotentHint/openWorldHint/
   title) across the 29-tool surface.
+- Streaming data pipeline and storage retention (iteration 009):
+  row-at-a-time dataset registration with bounded memory, source-level
+  deduplication, streamed feed alignment, hardened tabular derivation
+  (row-numbered errors, output cap), incremental catalog refresh via an
+  (mtime,size) fingerprint cache with single-transaction writes and stale
+  entry cleanup, per-thread SQLite connection reuse, `clean --kind
+  cas|drafts|approvals` retention, and duration instrumentation.
 - Job state-machine hardening (iteration 008): compare-and-swap transitions
   with terminal-first arbitration, a server-owned watchdog consuming the
   worker heartbeat and enforcing the wall-clock deadline, structured
