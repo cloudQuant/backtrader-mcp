@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   values.
 - Tool annotations (readOnlyHint/destructiveHint/idempotentHint/openWorldHint/
   title) across the 29-tool surface.
+- Job state-machine hardening (iteration 008): compare-and-swap transitions
+  with terminal-first arbitration, a server-owned watchdog consuming the
+  worker heartbeat and enforcing the wall-clock deadline, structured
+  `error_kind` classification, an atomic concurrency gate (reject instead of
+  queue), `clean --kind jobs` retention, and a read-only doctor jobs section.
 
 ### Changed
 - Ruff is the single formatter; mypy failures now block CI and pre-commit.
