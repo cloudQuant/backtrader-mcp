@@ -92,3 +92,28 @@ def utc_now() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat()
+
+
+class FileHashCache:
+    """Small (inode, mtime, size)-keyed digest cache for integrity echoes.
+
+    Only for read-only preview/inspect surfaces: security-critical
+    verification paths (worker, tokens, changes) keep using the uncached
+    :func:`file_hash` so a deliberately replayed timestamp can never turn
+    into a false content match there.
+    """
+
+    def __init__(self, max_entries: int = 256):
+        self.max_entries = max_entries
+        self._entries: dict[tuple[int, int, int], str] = {}
+
+    def hash(self, path: Path) -> str:
+        stat = path.stat()
+        key = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+        digest = self._entries.get(key)
+        if digest is None:
+            digest = file_hash(path)
+            if len(self._entries) >= self.max_entries:
+                self._entries.clear()
+            self._entries[key] = digest
+        return digest

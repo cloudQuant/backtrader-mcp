@@ -58,9 +58,13 @@ def build_parser() -> argparse.ArgumentParser:
     logs_parser.add_argument("--job", required=True)
 
     clean_parser = subparsers.add_parser(
-        "clean", help="delete old audit, idempotency, or terminal job records before a date"
+        "clean", help="delete old audit/idempotency/jobs/cas/drafts/approvals records before a date"
     )
-    clean_parser.add_argument("--kind", required=True, choices=("audit", "idempotency", "jobs"))
+    clean_parser.add_argument(
+        "--kind",
+        required=True,
+        choices=("audit", "idempotency", "jobs", "cas", "drafts", "approvals"),
+    )
     clean_parser.add_argument(
         "--before", required=True, help="ISO date YYYY-MM-DD (records older than this are deleted)"
     )
@@ -125,6 +129,21 @@ def _clean_records(service: BacktraderMCPService, kind: str, before: str) -> dic
     if kind == "jobs":
         result = service.jobs.clean_jobs(before)
         return {"kind": kind, "before": before, **result}
+    if kind == "cas":
+        result = service.datasets.clean_cas(before)
+        return {"kind": kind, "before": before, **result}
+    if kind == "drafts":
+        result = service.drafts.clean_drafts(before)
+        return {"kind": kind, "before": before, **result}
+    if kind == "approvals":
+        deleted = service.state.clean_approvals(before)
+        service.state.audit(
+            "clean.records",
+            kind,
+            {"kind": kind, "before": before, "deleted": deleted},
+        )
+        service.state.checkpoint()
+        return {"kind": kind, "before": before, "deleted": deleted}
     if kind == "audit":
         deleted = service.state.clean_audit(before)
     else:

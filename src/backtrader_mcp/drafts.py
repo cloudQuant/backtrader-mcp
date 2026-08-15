@@ -5,19 +5,25 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import shutil
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .contracts import SCAFFOLD_PROFILES, StrategySpec
 from .errors import Conflict, InvalidRequest
 from .locks import LockManager
+from .logging_config import get_logger
 from .scaffold import scaffold_files
 from .security import TokenSigner, confined_path
 from .settings import Settings
 from .state import StateStore
 from .util import atomic_write, file_hash, sha256_json, utc_now
 from .validation import validate_sources
+
+logger = get_logger("drafts")
 
 
 class DraftService:
@@ -311,3 +317,49 @@ class DraftService:
         if validation["report"]["status"] != "passed":
             raise Conflict("draft validation did not pass")
         return {"draft": draft, "validation": validation, "claims": claims}
+
+    def clean_drafts(self, before_iso: str) -> dict[str, int]:
+        """Delete unreferenced drafts older than ``before_iso`` (rows and dirs)."""
+        try:
+            cutoff = datetime.fromisoformat(before_iso)
+        except ValueError as exc:
+            raise InvalidRequest(
+                "before must be an ISO date like YYYY-MM-DD or a full ISO timestamp",
+                suggestion="use YYYY-MM-DD to delete drafts created before that date",
+            ) from exc
+        referenced = {job.get("draft_id") for job in self.state.list("job")}
+        referenced |= {plan.get("draft_id") for plan in self.state.list("run_plan")}
+        deleted_rows = 0
+        removed_dirs = 0
+        for draft in self.state.list("draft"):
+            draft_id = draft.get("draft_id")
+            if not isinstance(draft_id, str) or not re.fullmatch(r"draft_[0-9a-f]{32}", draft_id):
+                continue
+            if draft_id in referenced:
+                continue
+            try:
+                created = datetime.fromisoformat(draft.get("created_at") or "")
+            except ValueError:
+                continue
+            if created >= cutoff:
+                continue
+            draft_root = self.settings.state_root / "drafts" / draft_id
+            if draft_root.is_dir():
+                try:
+                    shutil.rmtree(draft_root)
+                    removed_dirs += 1
+                except OSError:
+                    logger.exception("clean.drafts dir removal failed draft_id=%s", draft_id)
+                    continue
+            self.state.delete("draft", draft_id)
+            deleted_rows += 1
+        try:
+            self.state.audit(
+                "clean.drafts",
+                None,
+                {"before": before_iso, "deleted_rows": deleted_rows, "removed_dirs": removed_dirs},
+            )
+            self.state.checkpoint()
+        except Exception:
+            logger.exception("clean.drafts audit/checkpoint failed after deletion")
+        return {"deleted_rows": deleted_rows, "removed_dirs": removed_dirs}
