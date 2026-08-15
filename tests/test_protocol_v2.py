@@ -263,3 +263,25 @@ def test_mcp_v2_job_logs_resource_is_readable_and_sanitized(tmp_path):
             assert "line 12" in content
 
     asyncio.run(exercise())
+
+
+def test_mcp_v2_accepts_injected_service(tmp_path):
+    async def exercise():
+        from backtrader_mcp.service import BacktraderMCPService
+
+        settings = Settings(
+            state_root=tmp_path / "state",
+            source_roots={},
+            target_roots={},
+            runtimes={},
+        )
+        service = BacktraderMCPService(settings)
+        server = create_server(settings, service=service)
+        async with Client(server) as client:
+            tools = await client.list_tools()
+            assert {tool.name for tool in tools.tools} == EXPECTED_TOOLS
+            watchdog = service.jobs.start_watchdog()
+            assert watchdog.is_running()
+            watchdog.stop()
+
+    asyncio.run(exercise())

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -37,6 +39,9 @@ RUN_PROFILES = set(RUN_PROFILE_MODES)
 JOB_ID_PATTERN = re.compile(r"^job_[0-9a-f]{32}$")
 DEFAULT_LOG_TAIL_BYTES = 8000
 MAX_LOG_TAIL_BYTES = 25000
+WATCHDOG_INTERVAL_SECONDS = 2.0
+HEARTBEAT_STALE_SECONDS = 15.0
+WATCHDOG_DEADLINE_GRACE_SECONDS = 5.0
 
 
 def job_summary(job: dict[str, Any]) -> dict[str, Any]:
@@ -146,6 +151,7 @@ class JobService:
     ) -> dict[str, Any]:
         if (
             not isinstance(timeout_seconds, int)
+            or isinstance(timeout_seconds, bool)
             or timeout_seconds < 1
             or timeout_seconds > self.settings.max_run_seconds
         ):
@@ -246,6 +252,103 @@ class JobService:
             expires.isoformat(),
         )
 
+    def _assert_capacity(self) -> None:
+        """Reject new starts when the active-job cap is reached (no queueing)."""
+        active_count = sum(
+            1 for existing in self.state.list("job") if existing.get("state") in ACTIVE_STATES
+        )
+        if active_count >= self.settings.max_concurrent_jobs:
+            raise Conflict(
+                "too many concurrent jobs; the product rejects instead of queueing",
+                suggestion=(
+                    "use list_jobs with state='active' to find running jobs, then "
+                    "cancel one or wait for it to finish"
+                ),
+            )
+
+    def _create_job_record(
+        self, plan: dict[str, Any], runtime: Path, approval_id: str
+    ) -> tuple[str, Path]:
+        """Create the durable QUEUED job row and mark the run plan started.
+
+        Called while holding both the per-plan and the global concurrency
+        locks, so the active-job count and the job row are atomic. Returns
+        the new job ID and its private job directory.
+        """
+        job_id = f"job_{uuid.uuid4().hex}"
+        job_root = self.settings.state_root / "jobs" / job_id
+        job_root.mkdir(mode=0o700)
+        entrypoint = "test_strategy.py" if plan["output_profile"] == "single_test" else "run.py"
+        run_manifest_core = {
+            "schema_version": "run-manifest-v1",
+            "run_id": job_id,
+            "artifact_hash": plan["artifact_hash"],
+            "dataset_id": plan["dataset_id"],
+            "engine": {
+                "id": plan["runtime_id"],
+                "version_file_hash": plan["runtime_version_file_hash"],
+            },
+            "environment_hash": sha256_json(
+                {
+                    "python": sys.version,
+                    "runtime_id": plan["runtime_id"],
+                    "runtime_version_file_hash": plan["runtime_version_file_hash"],
+                }
+            ),
+            "run_profile": {
+                "timeout_seconds": plan["timeout_seconds"],
+                "run_modes": plan["run_modes"],
+                "execution_modes": plan["execution_modes"],
+                "profile_id": plan["run_profile_id"],
+            },
+            "approval_id": approval_id,
+        }
+        run_manifest = {
+            **run_manifest_core,
+            "manifest_hash": sha256_json(run_manifest_core),
+        }
+        job = {
+            "job_id": job_id,
+            "state": "QUEUED",
+            "run_plan_id": plan["run_plan_id"],
+            "draft_id": plan["draft_id"],
+            "draft_revision": plan["draft_revision"],
+            "draft_manifest_hash": plan["draft_manifest_hash"],
+            "validation_id": plan["validation_id"],
+            "dataset_id": plan["dataset_id"],
+            "dataset_semantic_hash": plan["dataset_semantic_hash"],
+            "dataset_content_hashes": plan["dataset_content_hashes"],
+            "runtime_id": plan["runtime_id"],
+            "runtime_root": str(runtime),
+            "entrypoint": entrypoint,
+            "timeout_seconds": plan["timeout_seconds"],
+            "run_profile_id": plan["run_profile_id"],
+            "execution_modes": plan["execution_modes"],
+            "resource_limits": self.settings.resource_limits(),
+            "worker_pid": None,
+            "child_pid": None,
+            "created_at": utc_now(),
+            "started_at": None,
+            "finished_at": None,
+            "heartbeat_at": None,
+            "error": None,
+            "error_kind": None,
+            "result": None,
+            "run_manifest": run_manifest,
+        }
+        self.state.put("job", job_id, job)
+        self.state.update(
+            "run_plan",
+            plan["run_plan_id"],
+            lambda current_plan: {
+                **current_plan,
+                "status": "started",
+                "job_id": job_id,
+                "approval_id": approval_id,
+            },
+        )
+        return job_id, job_root
+
     def start_strategy_run(
         self,
         run_plan_id: str,
@@ -270,102 +373,34 @@ class JobService:
                 or plan["status"] != "prepared"
             ):
                 raise Conflict("run token is stale or does not bind this run plan")
-            draft = self.drafts.get_draft(plan["draft_id"])
-            dataset = self.datasets.get_dataset(plan["dataset_id"])
-            runtime = self.settings.runtimes.get(plan["runtime_id"])
-            if runtime is None:
-                raise NotFound(f"Backtrader runtime not registered: {plan['runtime_id']}")
-            runtime = require_cloudquant_runtime(runtime)
-            current = {
-                "draft_revision": draft["revision"],
-                "draft_manifest_hash": draft["manifest_hash"],
-                "artifact_hash": draft["artifact_manifest"]["artifact_hash"],
-                "dataset_semantic_hash": dataset["semantic_hash"],
-                "dataset_content_hashes": {
-                    name: item["sha256"]
-                    for name, item in sorted(dataset["extensions"]["feed_objects"].items())
-                },
-                "runtime_version_file_hash": file_hash(runtime / "backtrader" / "version.py"),
-            }
-            if any(plan[key] != value for key, value in current.items()):
-                raise Conflict("run inputs changed after prepare")
-            active_count = sum(
-                1 for existing in self.state.list("job") if existing.get("state") in ACTIVE_STATES
-            )
-            if active_count >= self.settings.max_concurrent_jobs:
-                raise Conflict("too many concurrent jobs; cancel or wait for one to finish")
-            self.state.consume_approval(approval_id, "run", run_plan_id, plan["run_plan_hash"])
-            job_id = f"job_{uuid.uuid4().hex}"
-            job_root = self.settings.state_root / "jobs" / job_id
-            job_root.mkdir(mode=0o700)
-            entrypoint = "test_strategy.py" if plan["output_profile"] == "single_test" else "run.py"
-            run_manifest_core = {
-                "schema_version": "run-manifest-v1",
-                "run_id": job_id,
-                "artifact_hash": plan["artifact_hash"],
-                "dataset_id": plan["dataset_id"],
-                "engine": {
-                    "id": plan["runtime_id"],
-                    "version_file_hash": plan["runtime_version_file_hash"],
-                },
-                "environment_hash": sha256_json(
-                    {
-                        "python": sys.version,
-                        "runtime_id": plan["runtime_id"],
-                        "runtime_version_file_hash": plan["runtime_version_file_hash"],
-                    }
-                ),
-                "run_profile": {
-                    "timeout_seconds": plan["timeout_seconds"],
-                    "run_modes": plan["run_modes"],
-                    "execution_modes": plan["execution_modes"],
-                    "profile_id": plan["run_profile_id"],
-                },
-                "approval_id": approval_id,
-            }
-            run_manifest = {
-                **run_manifest_core,
-                "manifest_hash": sha256_json(run_manifest_core),
-            }
-            job = {
-                "job_id": job_id,
-                "state": "QUEUED",
-                "run_plan_id": run_plan_id,
-                "draft_id": plan["draft_id"],
-                "draft_revision": plan["draft_revision"],
-                "draft_manifest_hash": plan["draft_manifest_hash"],
-                "validation_id": plan["validation_id"],
-                "dataset_id": plan["dataset_id"],
-                "dataset_semantic_hash": plan["dataset_semantic_hash"],
-                "dataset_content_hashes": plan["dataset_content_hashes"],
-                "runtime_id": plan["runtime_id"],
-                "runtime_root": str(runtime),
-                "entrypoint": entrypoint,
-                "timeout_seconds": plan["timeout_seconds"],
-                "run_profile_id": plan["run_profile_id"],
-                "execution_modes": plan["execution_modes"],
-                "resource_limits": self.settings.resource_limits(),
-                "worker_pid": None,
-                "child_pid": None,
-                "created_at": utc_now(),
-                "started_at": None,
-                "finished_at": None,
-                "heartbeat_at": None,
-                "error": None,
-                "result": None,
-                "run_manifest": run_manifest,
-            }
-            self.state.put("job", job_id, job)
-            self.state.update(
-                "run_plan",
-                run_plan_id,
-                lambda current_plan: {
-                    **current_plan,
-                    "status": "started",
-                    "job_id": job_id,
-                    "approval_id": approval_id,
-                },
-            )
+            with self.locks.acquire("job-concurrency"):
+                # Recheck idempotency under the global lock so a key reused
+                # across two run plans cannot create a duplicate job.
+                prior = self.state.idempotent_get("start_strategy_run", idempotency_key, request)
+                if prior is not None:
+                    return prior
+                draft = self.drafts.get_draft(plan["draft_id"])
+                dataset = self.datasets.get_dataset(plan["dataset_id"])
+                runtime = self.settings.runtimes.get(plan["runtime_id"])
+                if runtime is None:
+                    raise NotFound(f"Backtrader runtime not registered: {plan['runtime_id']}")
+                runtime = require_cloudquant_runtime(runtime)
+                current = {
+                    "draft_revision": draft["revision"],
+                    "draft_manifest_hash": draft["manifest_hash"],
+                    "artifact_hash": draft["artifact_manifest"]["artifact_hash"],
+                    "dataset_semantic_hash": dataset["semantic_hash"],
+                    "dataset_content_hashes": {
+                        name: item["sha256"]
+                        for name, item in sorted(dataset["extensions"]["feed_objects"].items())
+                    },
+                    "runtime_version_file_hash": file_hash(runtime / "backtrader" / "version.py"),
+                }
+                if any(plan[key] != value for key, value in current.items()):
+                    raise Conflict("run inputs changed after prepare")
+                self._assert_capacity()
+                self.state.consume_approval(approval_id, "run", run_plan_id, plan["run_plan_hash"])
+                job_id, job_root = self._create_job_record(plan, runtime, approval_id)
         package_src = str(Path(__file__).resolve().parents[1])
         environment = platform_environment(
             {
@@ -430,17 +465,24 @@ class JobService:
         with self.locks.acquire(f"job:{job_id}"):
             job = self.state.get("job", job_id)
             if job["state"] in ACTIVE_STATES and not _pid_alive(job.get("worker_pid")):
-                job = self.state.update(
-                    "job",
-                    job_id,
-                    lambda current: {
-                        **current,
-                        "state": "ORPHANED",
-                        "finished_at": utc_now(),
-                        "error": "worker process disappeared before a terminal state was persisted",
-                    },
-                )
-                logger.warning("job.orphaned job_id=%s", job_id)
+                try:
+                    job = self.state.update(
+                        "job",
+                        job_id,
+                        lambda current: {
+                            **current,
+                            "state": "ORPHANED",
+                            "finished_at": utc_now(),
+                            "error": "worker process disappeared before a terminal state was persisted",
+                            "error_kind": "orphaned",
+                        },
+                        expected=lambda current: current.get("state") in ACTIVE_STATES,
+                    )
+                    logger.warning("job.orphaned job_id=%s", job_id)
+                except Conflict:
+                    # Another actor (worker or watchdog) finalized the job first;
+                    # report the persisted state instead of overwriting it.
+                    job = self.state.get("job", job_id)
             status = {key: value for key, value in job.items() if key not in {"runtime_root"}}
             status["log_uri"] = f"backtrader-mcp://jobs/{job_id}/logs"
             status["elapsed_seconds"] = _elapsed_seconds(job)
@@ -523,27 +565,57 @@ class JobService:
             if job["state"] in TERMINAL_STATES:
                 response = {"job_id": job_id, "state": job["state"], "already_terminal": True}
             else:
-                self.state.update(
-                    "job",
-                    job_id,
-                    lambda current: {**current, "state": "CANCEL_REQUESTED"},
-                )
+                try:
+                    self.state.update(
+                        "job",
+                        job_id,
+                        lambda current: {
+                            **current,
+                            "state": "CANCEL_REQUESTED",
+                            "error": "cancel requested by local client",
+                            "error_kind": "cancelled",
+                        },
+                        expected=lambda current: current.get("state") in ACTIVE_STATES,
+                    )
+                except Conflict:
+                    # A terminal state was persisted concurrently; honor it.
+                    final = self.state.get("job", job_id)
+                    response = {
+                        "job_id": job_id,
+                        "state": final["state"],
+                        "already_terminal": True,
+                    }
+                    self.state.idempotent_put(
+                        "cancel_strategy_run", idempotency_key, request, response
+                    )
+                    return response
                 child_pid = job.get("child_pid")
                 worker_pid = job.get("worker_pid")
                 for pid in (child_pid, worker_pid):
                     if isinstance(pid, int) and not isinstance(pid, bool) and _pid_alive(pid):
                         terminate_pid(pid)
-                self.state.update(
-                    "job",
-                    job_id,
-                    lambda current: {
-                        **current,
-                        "state": "CANCELLED",
-                        "finished_at": utc_now(),
-                        "error": "cancelled by local client request",
-                    },
-                )
-                response = {"job_id": job_id, "state": "CANCELLED", "already_terminal": False}
+                try:
+                    self.state.update(
+                        "job",
+                        job_id,
+                        lambda current: {
+                            **current,
+                            "state": "CANCELLED",
+                            "finished_at": utc_now(),
+                            "error": "cancelled by local client request",
+                            "error_kind": "cancelled",
+                        },
+                        expected=lambda current: current.get("state") == "CANCEL_REQUESTED",
+                    )
+                except Conflict:
+                    # The worker or watchdog finalized first; report its state.
+                    pass
+                final = self.state.get("job", job_id)
+                response = {
+                    "job_id": job_id,
+                    "state": final["state"],
+                    "already_terminal": final["state"] in TERMINAL_STATES,
+                }
             self.state.idempotent_put("cancel_strategy_run", idempotency_key, request, response)
             self.state.audit("job.cancelled", job_id, response)
             logger.info("job.cancelled job_id=%s", job_id)
@@ -562,16 +634,173 @@ class JobService:
         recovered: list[str] = []
         for job in self.state.list("job"):
             if job["state"] in ACTIVE_STATES and not _pid_alive(job.get("worker_pid")):
-                self.state.update(
-                    "job",
-                    job["job_id"],
-                    lambda current: {
-                        **current,
-                        "state": "ORPHANED",
-                        "finished_at": utc_now(),
-                        "error": "worker was absent during startup recovery",
-                    },
-                )
+                try:
+                    self.state.update(
+                        "job",
+                        job["job_id"],
+                        lambda current: {
+                            **current,
+                            "state": "ORPHANED",
+                            "finished_at": utc_now(),
+                            "error": "worker was absent during startup recovery",
+                            "error_kind": "orphaned",
+                        },
+                        expected=lambda current: current.get("state") in ACTIVE_STATES,
+                    )
+                except Conflict:
+                    continue
                 recovered.append(job["job_id"])
                 logger.info("job.recovered job_id=%s", job["job_id"])
         return recovered
+
+    # ------------------------------------------------------------------
+    # Supervision, retention, and diagnostics
+    # ------------------------------------------------------------------
+
+    def _watchdog_decision(self, job: dict[str, Any]) -> str | None:
+        """Decide one enforcement action for an ACTIVE job, or None."""
+        worker_pid = job.get("worker_pid")
+        if not _pid_alive(worker_pid):
+            return "orphan"
+        started = _parse_iso(job.get("started_at"))
+        timeout = job.get("timeout_seconds")
+        if started is not None and isinstance(timeout, (int, float)) and timeout > 0:
+            deadline = started + timedelta(seconds=timeout + WATCHDOG_DEADLINE_GRACE_SECONDS)
+            if datetime.now(timezone.utc) > deadline:
+                return "timeout"
+        heartbeat = _parse_iso(job.get("heartbeat_at"))
+        if heartbeat is None:
+            return None
+        stale_after = heartbeat + timedelta(seconds=HEARTBEAT_STALE_SECONDS)
+        if datetime.now(timezone.utc) > stale_after:
+            return "timeout"
+        return None
+
+    def _enforce_watchdog_decision(self, job: dict[str, Any], decision: str) -> None:
+        """Kill leftover processes first, then persist the terminal state via CAS."""
+        job_id = job["job_id"]
+        child_pid = job.get("child_pid")
+        worker_pid = job.get("worker_pid")
+        if decision == "timeout":
+            for pid in (child_pid, worker_pid):
+                if isinstance(pid, int) and not isinstance(pid, bool) and _pid_alive(pid):
+                    terminate_pid(pid)
+            try:
+                self.state.update(
+                    "job",
+                    job_id,
+                    lambda current: {
+                        **current,
+                        "state": "TIMED_OUT",
+                        "finished_at": utc_now(),
+                        "error": "watchdog: worker heartbeat lost or wall-clock deadline exceeded",
+                        "error_kind": "timeout",
+                    },
+                    expected=lambda current: current.get("state") in ACTIVE_STATES,
+                )
+            except Conflict:
+                pass
+            return
+        if isinstance(child_pid, int) and not isinstance(child_pid, bool):
+            # The worker is gone but its detached candidate session may survive;
+            # terminate_pid is a harmless no-op when the group is already dead.
+            terminate_pid(child_pid)
+        try:
+            self.state.update(
+                "job",
+                job_id,
+                lambda current: {
+                    **current,
+                    "state": "ORPHANED",
+                    "finished_at": utc_now(),
+                    "error": "watchdog: worker process disappeared before a terminal state",
+                    "error_kind": "orphaned",
+                },
+                expected=lambda current: current.get("state") in ACTIVE_STATES,
+            )
+        except Conflict:
+            pass
+
+    def watchdog_tick(self) -> dict[str, Any]:
+        """One supervision pass over ACTIVE jobs (idempotent, CAS-guarded)."""
+        enforced: list[dict[str, str]] = []
+        for job in self.state.list("job"):
+            if job.get("state") not in ACTIVE_STATES:
+                continue
+            job_id = job["job_id"]
+            with self.locks.acquire(f"job:{job_id}"):
+                current = self.state.maybe_get("job", job_id)
+                if current is None or current.get("state") not in ACTIVE_STATES:
+                    continue
+                decision = self._watchdog_decision(current)
+                if decision is None:
+                    continue
+                self._enforce_watchdog_decision(current, decision)
+                enforced.append({"job_id": job_id, "decision": decision})
+                logger.warning("watchdog.enforced job_id=%s decision=%s", job_id, decision)
+        return {"enforced": enforced}
+
+    def start_watchdog(self) -> "JobWatchdog":
+        return JobWatchdog(self).start()
+
+    def clean_jobs(self, before_iso: str) -> dict[str, int]:
+        """Delete terminal jobs finished before ``before_iso`` (rows and dirs)."""
+        removed_dirs = 0
+        deleted_rows = 0
+        for job in self.state.list("job"):
+            if job.get("state") not in TERMINAL_STATES:
+                continue
+            finished = job.get("finished_at")
+            if not finished or finished >= before_iso:
+                continue
+            job_id = job["job_id"]
+            job_root = self.settings.state_root / "jobs" / job_id
+            if job_root.is_dir():
+                shutil.rmtree(job_root, ignore_errors=True)
+                removed_dirs += 1
+            self.state.delete("job", job_id)
+            deleted_rows += 1
+            logger.info("job.cleaned job_id=%s", job_id)
+        self.state.audit(
+            "clean.jobs",
+            None,
+            {"before": before_iso, "deleted_rows": deleted_rows, "removed_dirs": removed_dirs},
+        )
+        self.state.checkpoint()
+        return {"deleted_rows": deleted_rows, "removed_dirs": removed_dirs}
+
+
+class JobWatchdog:
+    """Daemon supervision loop owned by the serving process only."""
+
+    def __init__(self, jobs: JobService, interval_seconds: float = WATCHDOG_INTERVAL_SECONDS):
+        self.jobs = jobs
+        self.interval = interval_seconds
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> "JobWatchdog":
+        if self._thread is None:
+            self._thread = threading.Thread(
+                target=self._loop, name="backtrader-mcp-watchdog", daemon=True
+            )
+            self._thread.start()
+            logger.info("watchdog.started interval=%.1f", self.interval)
+        return self
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout)
+            self._thread = None
+        logger.info("watchdog.stopped")
+
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self.interval):
+            try:
+                self.jobs.watchdog_tick()
+            except Exception:
+                logger.exception("watchdog.tick_failed")

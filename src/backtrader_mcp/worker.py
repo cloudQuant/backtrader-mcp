@@ -5,14 +5,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from .errors import InvalidRequest
-from .jobs import RUN_PROFILE_MODES
+from .errors import Conflict, InvalidRequest
+from .jobs import ACTIVE_STATES, RUN_PROFILE_MODES, TERMINAL_STATES
 from .logging_config import configure_logging, get_logger
 from .process_control import platform_environment, popen_group_options, terminate_popen
 from .reports import compare_metrics, normalize_metrics, render_markdown
@@ -72,8 +73,100 @@ def _apply_resource_limits(limits: dict[str, int]) -> None:
             pass
 
 
-def _update(store: StateStore, job_id: str, **values: Any) -> dict[str, Any]:
-    return store.update("job", job_id, lambda current: {**current, **values})
+def _update_if(store: StateStore, job_id: str, expected: Any, **values: Any) -> dict[str, Any]:
+    """Apply values only while ``expected(current)`` holds (CAS write)."""
+    return store.update("job", job_id, lambda current: {**current, **values}, expected=expected)
+
+
+def _write_terminal(
+    store: StateStore,
+    job_id: str,
+    state: str,
+    error: str | None,
+    error_kind: str | None,
+    **extra: Any,
+) -> dict[str, Any] | None:
+    """Persist a non-cancel terminal state; never overwrites an existing
+    terminal state or a visible CANCEL_REQUESTED (arbitration rule)."""
+
+    def precondition(current: dict[str, Any]) -> bool:
+        return current.get("state") not in TERMINAL_STATES and current.get("state") != (
+            "CANCEL_REQUESTED"
+        )
+
+    try:
+        return _update_if(
+            store,
+            job_id,
+            precondition,
+            state=state,
+            finished_at=utc_now(),
+            heartbeat_at=utc_now(),
+            error=error,
+            error_kind=error_kind,
+            **extra,
+        )
+    except Conflict:
+        return None
+
+
+def _write_cancelled(store: StateStore, job_id: str, error: str) -> dict[str, Any] | None:
+    """Persist CANCELLED; only valid from CANCEL_REQUESTED (cancel wins once visible)."""
+    try:
+        return _update_if(
+            store,
+            job_id,
+            lambda current: current.get("state") == "CANCEL_REQUESTED",
+            state="CANCELLED",
+            finished_at=utc_now(),
+            heartbeat_at=utc_now(),
+            error=error,
+            error_kind="cancelled",
+        )
+    except Conflict:
+        return None
+
+
+def _write_running(store: StateStore, job_id: str) -> dict[str, Any] | None:
+    """Start the run only if the job is still QUEUED."""
+    try:
+        return _update_if(
+            store,
+            job_id,
+            lambda current: current.get("state") == "QUEUED",
+            state="RUNNING",
+            started_at=utc_now(),
+            heartbeat_at=utc_now(),
+            worker_pid=os.getpid(),
+        )
+    except Conflict:
+        return None
+
+
+def _heartbeat(store: StateStore, job_id: str) -> None:
+    """Refresh the liveness heartbeat only while the job stays active."""
+    try:
+        _update_if(
+            store,
+            job_id,
+            lambda current: current.get("state") in ACTIVE_STATES,
+            heartbeat_at=utc_now(),
+        )
+    except Conflict:
+        pass
+
+
+def _classify_exit(returncode: int) -> tuple[str, str] | None:
+    """Classify a candidate exit code into the product error_kind taxonomy."""
+    if returncode == 0:
+        return None
+    if returncode < 0:
+        try:
+            name = signal.Signals(-returncode).name
+        except ValueError:
+            name = str(-returncode)
+        return "resource_limit", f"candidate was killed by signal {name}"
+    return "user_strategy", f"candidate exited {returncode}"
 
 
 def _validate_result(value: Any, expected_feed_configs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -201,12 +294,12 @@ def run_worker(state_root: Path, job_id: str) -> int:
             file_hash(dataset_path) != item["sha256"]
             or job["dataset_content_hashes"].get(name) != item["sha256"]
         ):
-            _update(
+            _write_terminal(
                 state,
                 job_id,
-                state="FAILED",
-                finished_at=utc_now(),
-                error=f"dataset CAS content failed its hash check: {name}",
+                "FAILED",
+                f"dataset CAS content failed its hash check: {name}",
+                "infrastructure",
             )
             return 2
         dataset_paths[name] = str(dataset_path)
@@ -226,12 +319,12 @@ def run_worker(state_root: Path, job_id: str) -> int:
     master_dataset_path = dataset_paths[dataset["master_feed"]]
     for relative, digest in draft["manifest"].items():
         if file_hash(draft_root / relative) != digest:
-            _update(
+            _write_terminal(
                 state,
                 job_id,
-                state="FAILED",
-                finished_at=utc_now(),
-                error="draft content failed its hash check",
+                "FAILED",
+                "draft content failed its hash check",
+                "infrastructure",
             )
             return 2
     entrypoint = draft_root / job["entrypoint"]
@@ -242,23 +335,18 @@ def run_worker(state_root: Path, job_id: str) -> int:
         or any(mode not in {"runonce", "runnext"} for mode in modes)
         or modes != expected_modes
     ):
-        _update(
+        _write_terminal(
             state,
             job_id,
-            state="FAILED",
-            finished_at=utc_now(),
-            error="job execution modes do not match the frozen run profile",
+            "FAILED",
+            "job execution modes do not match the frozen run profile",
+            "validation",
         )
         return 2
     resource_limits = job.get("resource_limits") or {}
-    _update(
-        state,
-        job_id,
-        state="RUNNING",
-        started_at=utc_now(),
-        heartbeat_at=utc_now(),
-        worker_pid=os.getpid(),
-    )
+    if _write_running(state, job_id) is None:
+        logger.info("worker.start_suppressed job_id=%s", job_id)
+        return 3
     logger.info("worker.run_start job_id=%s profile=%s", job_id, job["run_profile_id"])
     deadline = time.monotonic() + job["timeout_seconds"]
     mode_results: dict[str, dict[str, Any]] = {}
@@ -289,53 +377,47 @@ def run_worker(state_root: Path, job_id: str) -> int:
                 close_fds=True,
                 **popen_group_options(preexec_fn=lambda: _apply_resource_limits(resource_limits)),
             )
-            _update(
+            recorded = _update_if(
                 state,
                 job_id,
+                lambda current: current.get("state") in ACTIVE_STATES,
                 child_pid=process.pid,
                 heartbeat_at=utc_now(),
                 active_mode=mode,
             )
+            if recorded is None:
+                terminate_popen(process)
+                logger.info("worker.child_record_suppressed job_id=%s", job_id)
+                return 3
             last_heartbeat = time.monotonic()
             while process.poll() is None:
                 current = state.get("job", job_id)
                 if current["state"] == "CANCEL_REQUESTED":
                     terminate_popen(process)
-                    _update(
-                        state,
-                        job_id,
-                        state="CANCELLED",
-                        finished_at=utc_now(),
-                        heartbeat_at=utc_now(),
-                        error="cancelled while running",
-                    )
+                    _write_cancelled(state, job_id, "cancelled while running")
                     return 3
                 now = time.monotonic()
                 if now >= deadline:
                     terminate_popen(process)
-                    _update(
+                    _write_terminal(
                         state,
                         job_id,
-                        state="TIMED_OUT",
-                        finished_at=utc_now(),
-                        heartbeat_at=utc_now(),
-                        error=f"run exceeded {job['timeout_seconds']} seconds",
+                        "TIMED_OUT",
+                        f"run exceeded {job['timeout_seconds']} seconds",
+                        "timeout",
                     )
                     return 4
                 if now - last_heartbeat >= 1.0:
-                    _update(state, job_id, heartbeat_at=utc_now())
+                    _heartbeat(state, job_id)
                     last_heartbeat = now
                 time.sleep(0.2)
         if process.returncode != 0:
-            error = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:]
-            _update(
-                state,
-                job_id,
-                state="FAILED",
-                finished_at=utc_now(),
-                heartbeat_at=utc_now(),
-                error=f"{mode} candidate exited {process.returncode}: {error}",
-            )
+            stderr_tail = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:]
+            classified = _classify_exit(process.returncode)
+            assert classified is not None  # nonzero returncodes always classify
+            kind, detail = classified
+            error = f"{mode} {detail}" + (f": {stderr_tail}" if stderr_tail else "")
+            _write_terminal(state, job_id, "FAILED", error, kind)
             return process.returncode or 1
         try:
             if result_path.stat().st_size > 1024 * 1024:
@@ -345,13 +427,12 @@ def run_worker(state_root: Path, job_id: str) -> int:
                 feed_configs,
             )
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            _update(
+            _write_terminal(
                 state,
                 job_id,
-                state="FAILED",
-                finished_at=utc_now(),
-                heartbeat_at=utc_now(),
-                error=f"{mode} result validation failed: {exc}",
+                "FAILED",
+                f"{mode} result validation failed: {exc}",
+                "validation",
             )
             return 5
         if candidate.get("extra_metrics"):
@@ -433,24 +514,17 @@ def run_worker(state_root: Path, job_id: str) -> int:
             },
         }
     except (OSError, ValueError, json.JSONDecodeError, InvalidRequest) as exc:
-        _update(
+        _write_terminal(
             state,
             job_id,
-            state="FAILED",
-            finished_at=utc_now(),
-            heartbeat_at=utc_now(),
-            error=f"result validation failed: {exc}",
+            "FAILED",
+            f"result validation failed: {exc}",
+            "validation",
         )
         return 5
-    _update(
-        state,
-        job_id,
-        state="SUCCEEDED",
-        finished_at=utc_now(),
-        heartbeat_at=utc_now(),
-        result=result,
-        error=None,
-    )
+    if _write_terminal(state, job_id, "SUCCEEDED", None, None, result=result) is None:
+        logger.info("worker.success_suppressed job_id=%s", job_id)
+        return 3
     state.audit(
         "job.succeeded",
         job_id,
@@ -466,7 +540,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state-root", required=True)
     parser.add_argument("--job-id", required=True)
     arguments = parser.parse_args(argv)
-    return run_worker(Path(arguments.state_root), arguments.job_id)
+    state_root = Path(arguments.state_root)
+    job_id = arguments.job_id
+    try:
+        return run_worker(state_root, job_id)
+    except Exception as exc:
+        logger.exception("worker.crashed job_id=%s", job_id)
+        try:
+            _write_terminal(
+                StateStore(state_root),
+                job_id,
+                "FAILED",
+                f"worker crashed: {type(exc).__name__}: {exc}",
+                "infrastructure",
+            )
+        except Exception:
+            logger.exception("worker.crash_persistence_failed job_id=%s", job_id)
+        return 1
 
 
 if __name__ == "__main__":

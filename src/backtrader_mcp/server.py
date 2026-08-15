@@ -40,15 +40,17 @@ def _annotations(
     )
 
 
-def create_server(settings: Settings | None = None) -> MCPServer:
+def create_server(
+    settings: Settings | None = None, *, service: BacktraderMCPService | None = None
+) -> MCPServer:
     effective_settings = settings or Settings.from_env()
-    service: BacktraderMCPService | None = None
+    _service: BacktraderMCPService | None = service
 
     def get_service() -> BacktraderMCPService:
-        nonlocal service
-        if service is None:
-            service = BacktraderMCPService(effective_settings)
-        return service
+        nonlocal _service
+        if _service is None:
+            _service = BacktraderMCPService(effective_settings)
+        return _service
 
     server = MCPServer(
         name="backtrader-mcp",
@@ -678,4 +680,15 @@ def create_server(settings: Settings | None = None) -> MCPServer:
 
 
 def run_stdio(settings: Settings | None = None) -> None:
-    create_server(settings).run("stdio")
+    """Serve stdio with an eagerly constructed service and supervision loop.
+
+    The watchdog is a server-process responsibility: CLI commands construct
+    the service without starting it.
+    """
+    effective = settings or Settings.from_env()
+    service = BacktraderMCPService(effective)
+    watchdog = service.jobs.start_watchdog()
+    try:
+        create_server(effective, service=service).run("stdio")
+    finally:
+        watchdog.stop()
