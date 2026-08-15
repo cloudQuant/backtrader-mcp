@@ -8,10 +8,12 @@ from typing import Any
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError
+from mcp.types import ToolAnnotations
 
 from . import __version__
 from .doctor import doctor_report
 from .errors import client_safe
+from .jobs import DEFAULT_LOG_TAIL_BYTES
 from .service import BacktraderMCPService
 from .settings import Settings
 
@@ -22,16 +24,20 @@ def _annotations(
     destructive: bool = False,
     idempotent: bool = False,
     open_world: bool = False,
-) -> dict[str, bool]:
+) -> ToolAnnotations:
     """Build the tool annotation hints shared by the registered surface."""
-    annotations: dict[str, bool] = {
-        "readOnlyHint": read_only,
-        "destructiveHint": destructive,
-        "openWorldHint": open_world,
-    }
-    if not read_only:
-        annotations["idempotentHint"] = idempotent
-    return annotations
+    if read_only:
+        return ToolAnnotations(
+            read_only_hint=True,
+            destructive_hint=False,
+            open_world_hint=open_world,
+        )
+    return ToolAnnotations(
+        read_only_hint=False,
+        destructive_hint=destructive,
+        open_world_hint=open_world,
+        idempotent_hint=idempotent,
+    )
 
 
 def create_server(settings: Settings | None = None) -> MCPServer:
@@ -179,7 +185,7 @@ def create_server(settings: Settings | None = None) -> MCPServer:
 
     @server.tool(
         title="Refresh Strategy Catalog",
-        annotations=_annotations(False, idempotent=True, open_world=True),
+        annotations=_annotations(False, open_world=True),
     )
     @client_safe
     def refresh_strategy_catalog(
@@ -459,20 +465,21 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         annotations=_annotations(True),
     )
     @client_safe
-    def list_jobs(state: str | None = None, limit: int = 50) -> dict[str, Any]:
+    def list_jobs(state: str | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
         """List durable jobs newest-first with pagination metadata.
 
         Filter by a job state or the pseudo-state "active" (QUEUED/RUNNING/
-        CANCEL_REQUESTED). Unknown states enumerate the valid values.
+        CANCEL_REQUESTED). Unknown states enumerate the valid values. Advance
+        through pages with offset while has_more is true.
         """
-        return get_service().list_jobs(state, limit)
+        return get_service().list_jobs(state, limit, offset)
 
     @server.tool(
         title="Run Logs",
         annotations=_annotations(True),
     )
     @client_safe
-    def get_run_logs(job_id: str, tail_bytes: int = 8000) -> dict[str, Any]:
+    def get_run_logs(job_id: str, tail_bytes: int = DEFAULT_LOG_TAIL_BYTES) -> dict[str, Any]:
         """Read bounded tails of a job's private log files.
 
         Use after a FAILED/TIMED_OUT/ORPHANED job to diagnose the cause before

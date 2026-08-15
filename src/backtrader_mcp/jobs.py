@@ -83,7 +83,13 @@ def _eta_bound(job: dict[str, Any]) -> str | None:
 
 
 def _tail_bytes(path: Path, limit: int) -> str:
-    """Read the last ``limit`` bytes of a file without loading it fully."""
+    """Read the last ``limit`` bytes of a file without loading it fully.
+
+    Bounded-read trade-offs: if the file grows between the size checks the
+    returned content can exceed ``limit`` while ``truncated`` stays false, and
+    a byte-boundary cut can split one multi-byte UTF-8 character (replaced
+    with U+FFFD). Both are acceptable for diagnostic tails.
+    """
     size = path.stat().st_size
     with path.open("rb") as stream:
         stream.seek(max(0, size - limit))
@@ -473,18 +479,21 @@ class JobService:
             "jobs": [job_summary(job) for job in page],
         }
 
-    def get_job_logs(
-        self, job_id: str, tail_bytes: int = DEFAULT_LOG_TAIL_BYTES
-    ) -> dict[str, Any]:
+    def get_job_logs(self, job_id: str, tail_bytes: int = DEFAULT_LOG_TAIL_BYTES) -> dict[str, Any]:
         if not isinstance(job_id, str) or not JOB_ID_PATTERN.match(job_id):
-            raise InvalidRequest("job_id must match the job_<32 hex characters> format")
-        if (
-            not isinstance(tail_bytes, int)
-            or tail_bytes < 1
-            or tail_bytes > MAX_LOG_TAIL_BYTES
-        ):
+            raise InvalidRequest(
+                "job_id must match the job_<32 hex characters> format",
+                suggestion="use list_jobs to discover valid job IDs",
+            )
+        if not isinstance(tail_bytes, int) or tail_bytes < 1 or tail_bytes > MAX_LOG_TAIL_BYTES:
             raise InvalidRequest(f"tail_bytes must be between 1 and {MAX_LOG_TAIL_BYTES}")
-        job = self.state.get("job", job_id)
+        try:
+            job = self.state.get("job", job_id)
+        except NotFound:
+            raise NotFound(
+                f"job not found: {job_id}",
+                suggestion="use list_jobs to discover existing job IDs",
+            ) from None
         job_root = self.settings.state_root / "jobs" / job_id
         files: dict[str, dict[str, Any]] = {}
         for path in sorted(job_root.glob("*.log")):
@@ -543,7 +552,10 @@ class JobService:
     def get_run_result(self, job_id: str) -> dict[str, Any]:
         job = self.get_run_status(job_id)
         if job["state"] != "SUCCEEDED" or not isinstance(job.get("result"), dict):
-            raise Conflict(f"job has no successful result: {job['state']}")
+            raise Conflict(
+                f"job has no successful result: {job['state']}",
+                suggestion="use get_run_logs to inspect the failure logs",
+            )
         return job["result"]
 
     def recover_jobs(self) -> list[str]:

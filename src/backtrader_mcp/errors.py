@@ -8,8 +8,9 @@ from typing import Any, Callable, TypeVar
 
 # Absolute filesystem paths leaked into an error message (e.g. from a candidate
 # traceback) are redacted before the message crosses the MCP boundary. The
-# lookbehind avoids matching relative paths such as ``backtrader/__init__.py``.
-_ABS_UNIX_PATH = re.compile(r"(?<![\w/])/(?:[\w.\-]+/)*[\w.\-]+")
+# lookbehind avoids matching relative paths such as ``backtrader/__init__.py``
+# and path-like fragments of URLs such as ``https://github.com/...``.
+_ABS_UNIX_PATH = re.compile(r"(?<![\w/:])/(?:[\w.\-]+/)*[\w.\-]+")
 _ABS_WIN_PATH = re.compile(r"\b[A-Za-z]:\\(?:[\w.\-]+\\)*[\w.\-]+")
 
 

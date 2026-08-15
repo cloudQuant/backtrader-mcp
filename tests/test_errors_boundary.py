@@ -51,7 +51,10 @@ def test_client_safe_wraps_product_error_with_structured_text():
 
     with pytest.raises(ClientToolError) as caught:
         failing_tool()
-    assert str(caught.value) == "[invalid_request] limit 0 rejected\nSuggestion: use a limit between 1 and 100"
+    assert (
+        str(caught.value)
+        == "[invalid_request] limit 0 rejected\nSuggestion: use a limit between 1 and 100"
+    )
 
 
 def test_client_safe_sanitizes_generic_exceptions():
@@ -77,4 +80,9 @@ def test_client_safe_preserves_returns():
 
 def test_sanitize_for_client_keeps_relative_paths():
     message = "strategy file strategies/run.py failed at line 12"
+    assert sanitize_for_client(message) == message
+
+
+def test_sanitize_for_client_preserves_urls():
+    message = "failed to fetch https://github.com/cloudquant/backtrader/archive.zip"
     assert sanitize_for_client(message) == message

@@ -80,6 +80,8 @@ def _list_objects(
         if kind == "job":
             if state_filter:
                 items = [job for job in items if job.get("state") == state_filter]
+            # Newest-first, matching the MCP list_jobs ordering.
+            items = sorted(items, key=lambda job: job.get("created_at", ""), reverse=True)
             items = [job_summary(job) for job in items]
     return {"kind": kind, "count": len(items), "items": items[:limit]}
 

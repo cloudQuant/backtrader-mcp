@@ -8,8 +8,8 @@ import pytest
 from backtrader_mcp.errors import InvalidRequest, NotFound
 
 
-def _iso(minutes_ago: float) -> str:
-    return (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
+def _iso(seconds_ago: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).isoformat()
 
 
 def _put_job(service, job_id: str, state: str = "RUNNING", **overrides) -> dict:
@@ -132,7 +132,7 @@ def test_get_run_status_derives_polling_fields(service_env):
     _put_job(service, job_id, state="QUEUED")
     status = service.get_run_status(job_id)
     assert status["log_uri"] == f"backtrader-mcp://jobs/{job_id}/logs"
-    assert status["elapsed_seconds"] >= 59.0
+    assert 55.0 <= status["elapsed_seconds"] <= 65.0
     assert status["eta_bound"] is not None
     eta = datetime.fromisoformat(status["eta_bound"])
     started = datetime.fromisoformat(status["started_at"])
@@ -141,5 +141,16 @@ def test_get_run_status_derives_polling_fields(service_env):
     _put_job(service, done_id, state="SUCCEEDED", finished_at=_iso(10))
     done = service.get_run_status(done_id)
     assert done["eta_bound"] is None
-    assert done["elapsed_seconds"] >= 49.0
+    assert 45.0 <= done["elapsed_seconds"] <= 55.0
     assert done["log_uri"] == f"backtrader-mcp://jobs/{done_id}/logs"
+
+
+def test_cli_job_listing_reuses_job_summary(service_env):
+    from backtrader_mcp.cli import _list_objects
+    from backtrader_mcp.jobs import job_summary
+
+    service, _, _ = service_env
+    job_id = "job_" + "6" * 32
+    _put_job(service, job_id, state="RUNNING")
+    result = _list_objects(service, "job", None, 10)
+    assert result["items"] == [job_summary(service.state.get("job", job_id))]

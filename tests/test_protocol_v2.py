@@ -75,6 +75,27 @@ EXPECTED_PROMPTS = {
     "recover_job",
 }
 
+READ_ONLY_TOOLS = {
+    "doctor",
+    "inspect_dataset",
+    "preview_dataset",
+    "get_catalog_snapshot",
+    "search_strategy_catalog",
+    "inspect_strategy",
+    "list_strategy_templates",
+    "get_strategy_draft",
+    "validate_strategy_spec",
+    "get_run_status",
+    "get_run_result",
+    "compare_strategy_runs",
+    "render_strategy_report",
+    "audit_independence",
+    "list_jobs",
+    "get_run_logs",
+}
+
+DESTRUCTIVE_TOOLS = {"apply_strategy_changes", "cancel_strategy_run"}
+
 
 def _create_synthetic_runtime(tmp_path: Path) -> Path:
     runtime = tmp_path / "runtime"
@@ -110,14 +131,15 @@ def test_mcp_v2_typed_surface(tmp_path):
             tools = await client.list_tools()
             by_name = {tool.name: tool for tool in tools.tools}
             assert set(by_name) == EXPECTED_TOOLS
-            assert by_name["get_run_status"].annotations.read_only_hint is True
-            assert by_name["preview_dataset"].annotations.read_only_hint is True
-            assert by_name["apply_strategy_changes"].annotations.read_only_hint is False
+            for name in READ_ONLY_TOOLS:
+                assert by_name[name].annotations.read_only_hint is True, name
+            for name in EXPECTED_TOOLS - READ_ONLY_TOOLS:
+                assert by_name[name].annotations.read_only_hint is False, name
+            for name in DESTRUCTIVE_TOOLS:
+                assert by_name[name].annotations.destructive_hint is True, name
             assert by_name["apply_strategy_changes"].annotations.destructive_hint is True
-            assert by_name["cancel_strategy_run"].annotations.destructive_hint is True
             assert by_name["start_strategy_run"].annotations.idempotent_hint is True
             assert by_name["doctor"].annotations.open_world_hint is True
-            assert by_name["get_run_logs"].annotations.read_only_hint is True
 
             snapshot = await client.call_tool("get_catalog_snapshot", {})
             assert not snapshot.is_error
@@ -171,6 +193,14 @@ def test_mcp_v2_error_results_are_structured_and_sanitized(tmp_path):
             )
             assert search_result.is_error
             assert "[invalid_request]" in search_result.content[0].text
+            archetype_result = await client.call_tool(
+                "search_strategy_catalog", {"query": "", "archetype": "nope"}
+            )
+            assert archetype_result.is_error
+            archetype_text = archetype_result.content[0].text
+            assert "[invalid_request]" in archetype_text
+            assert "Suggestion:" in archetype_text
+            assert "list_strategy_templates" in archetype_text
             with pytest.raises(Exception, match="allowed values"):
                 await client.read_resource("backtrader-mcp://contracts/nope")
 
@@ -201,5 +231,35 @@ def test_mcp_v2_typed_doctor_is_read_only(tmp_path):
         assert not state.exists(), "typed doctor must not create SQLite, secrets, or recovery state"
         assert not list(runtime.rglob("*.pyc"))
         assert not list(runtime.rglob("__pycache__"))
+
+    asyncio.run(exercise())
+
+
+def test_mcp_v2_job_logs_resource_is_readable_and_sanitized(tmp_path):
+    async def exercise():
+        from backtrader_mcp.service import BacktraderMCPService
+
+        settings = Settings(
+            state_root=tmp_path / "state",
+            source_roots={},
+            target_roots={},
+            runtimes={},
+        )
+        service = BacktraderMCPService(settings)
+        job_id = "job_" + "e" * 32
+        service.state.put("job", job_id, {"job_id": job_id, "state": "FAILED"})
+        job_root = settings.state_root / "jobs" / job_id
+        job_root.mkdir(parents=True, exist_ok=True)
+        (job_root / "supervisor.stderr.log").write_text(
+            "boom at /abs/private/x.py line 12\n", encoding="utf-8"
+        )
+        server = create_server(settings)
+        async with Client(server) as client:
+            read = await client.read_resource(f"backtrader-mcp://jobs/{job_id}/logs")
+            payload = json.loads(read.contents[0].text)
+            content = payload["files"]["supervisor.stderr.log"]["content"]
+            assert "/abs/private" not in content
+            assert "<path>" in content
+            assert "line 12" in content
 
     asyncio.run(exercise())

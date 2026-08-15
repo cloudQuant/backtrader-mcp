@@ -287,7 +287,8 @@ class CatalogService:
             raise InvalidRequest("catalog search offset must be a non-negative integer")
         if archetype is not None and archetype not in ARCHETYPES:
             raise InvalidRequest(
-                f"unknown archetype: {archetype}; valid archetypes: {', '.join(ARCHETYPES)}"
+                f"unknown archetype: {archetype}; valid archetypes: {', '.join(ARCHETYPES)}",
+                suggestion="use list_strategy_templates to see the available archetypes",
             )
         terms = _tokens(query)
         ranked: list[tuple[int, str, dict[str, Any], list[str]]] = []
