@@ -35,6 +35,7 @@ RUN_PROFILE_MODES = {
     "runnext": ("runnext",),
     "runonce_runnext_compare": ("runonce", "runnext"),
     "fixed_tests": ("runonce", "runnext"),
+    "parameter_sweep": ("runonce",),
 }
 RUN_PROFILES = set(RUN_PROFILE_MODES)
 JOB_ID_PATTERN = re.compile(r"^job_[0-9a-f]{32}$")
@@ -158,6 +159,7 @@ class JobService:
         timeout_seconds: int,
         run_profile_id: str,
         idempotency_key: str,
+        param_grid: dict[str, list[Any]] | None = None,
     ) -> dict[str, Any]:
         if (
             not isinstance(timeout_seconds, int)
@@ -177,6 +179,7 @@ class JobService:
             "runtime_id": runtime_id,
             "timeout_seconds": timeout_seconds,
             "run_profile_id": run_profile_id,
+            "param_grid": param_grid,
         }
         prior = self.state.idempotent_get("prepare_strategy_run", idempotency_key, request)
         if prior is not None:
@@ -184,6 +187,36 @@ class JobService:
         verified = self.drafts.verify_validation(draft_id, validation_token)
         declared_run_modes = verified["draft"]["strategy_spec"]["run_modes"]
         execution_modes = list(RUN_PROFILE_MODES[run_profile_id])
+        if run_profile_id == "parameter_sweep":
+            if param_grid is None:
+                raise InvalidRequest(
+                    "parameter_sweep requires a typed param_grid of strategy "
+                    "parameter names to value lists"
+                )
+            parameter_names = {
+                parameter["name"] for parameter in verified["draft"]["strategy_spec"]["parameters"]
+            }
+            if (
+                not isinstance(param_grid, dict)
+                or not param_grid
+                or any(name not in parameter_names for name in param_grid)
+            ):
+                raise InvalidRequest("param_grid keys must name declared StrategySpec parameters")
+            combos = 1
+            for name, values in param_grid.items():
+                if (
+                    not isinstance(values, list)
+                    or not values
+                    or any(not isinstance(item, (int, float, str, bool)) for item in values)
+                ):
+                    raise InvalidRequest(
+                        f"param_grid[{name!r}] must be a non-empty list of int/float/str/bool"
+                    )
+                combos *= len(values)
+            if combos > 64:
+                raise InvalidRequest(
+                    "param_grid expands to more than 64 combinations; reduce the grid"
+                )
         missing_modes = [mode for mode in execution_modes if mode not in declared_run_modes]
         if missing_modes:
             raise InvalidRequest(
@@ -221,6 +254,11 @@ class JobService:
             ),
             "timeout_seconds": timeout_seconds,
             "run_profile_id": run_profile_id,
+            "param_grid": (
+                {name: list(values) for name, values in sorted(param_grid.items())}
+                if param_grid is not None
+                else None
+            ),
             "run_modes": declared_run_modes,
             "execution_modes": execution_modes,
             "output_profile": verified["draft"]["profile"],
@@ -353,6 +391,7 @@ class JobService:
             "resource_limits": self.settings.resource_limits(),
             "seed": plan.get("seed"),
             "analyzers": plan.get("analyzers") or [],
+            "param_grid": plan.get("param_grid"),
             "worker_pid": None,
             "child_pid": None,
             "created_at": utc_now(),
@@ -432,8 +471,11 @@ class JobService:
                     raise Conflict("run inputs changed after prepare")
                 self._assert_capacity()
                 self.state.consume_approval(approval_id, "run", run_plan_id, plan["run_plan_hash"])
-                self.signer.consume(run_token)
+                # Create the durable job row FIRST; the nonce burns only after
+                # the persistent result exists so a failure here never bricks
+                # the run plan.
                 job_id, job_root = self._create_job_record(plan, runtime, approval_id)
+                self.signer.consume(run_token)
                 response = {
                     "job_id": job_id,
                     "run_id": job_id,
@@ -453,6 +495,11 @@ class JobService:
                 "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
                 "PYTHONPATH": os.pathsep.join([package_src, str(runtime)]),
                 "BACKTRADER_MCP_LOG_LEVEL": os.environ.get("BACKTRADER_MCP_LOG_LEVEL", "WARNING"),
+                **(
+                    {"COVERAGE_PROCESS_START": os.environ["COVERAGE_PROCESS_START"]}
+                    if os.environ.get("COVERAGE_PROCESS_START")
+                    else {}
+                ),
             }
         )
         supervisor_stdout = (job_root / "supervisor.stdout.log").open("ab")
@@ -514,7 +561,11 @@ class JobService:
     def get_run_status(self, job_id: str) -> dict[str, Any]:
         with self.locks.acquire(f"job:{job_id}"):
             job = self.state.get("job", job_id)
-            if job["state"] in ACTIVE_STATES and not _pid_alive(job.get("worker_pid")):
+            if (
+                job["state"] in ACTIVE_STATES
+                and job.get("worker_pid") is not None
+                and not _pid_alive(job.get("worker_pid"))
+            ):
                 try:
                     job = self.state.update(
                         "job",
@@ -695,7 +746,11 @@ class JobService:
     def recover_jobs(self) -> list[str]:
         recovered: list[str] = []
         for job in self.state.list("job"):
-            if job["state"] in ACTIVE_STATES and not _pid_alive(job.get("worker_pid")):
+            if (
+                job["state"] in ACTIVE_STATES
+                and job.get("worker_pid") is not None
+                and not _pid_alive(job.get("worker_pid"))
+            ):
                 try:
                     orphaned = self.state.update(
                         "job",

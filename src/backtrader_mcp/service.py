@@ -217,6 +217,9 @@ class BacktraderMCPService:
             idempotency_key,
         )
 
+    def list_target_tree(self, target_root_id: str, target_relative_dir: str) -> dict[str, Any]:
+        return self.changes.list_target_tree(target_root_id, target_relative_dir)
+
     def prepare_strategy_changes(
         self,
         draft_id: str,
@@ -258,6 +261,7 @@ class BacktraderMCPService:
         timeout_seconds: int = 60,
         run_profile_id: str = "fixed_tests",
         idempotency_key: str = "",
+        param_grid: dict[str, list[Any]] | None = None,
     ) -> dict[str, Any]:
         return self.jobs.prepare_strategy_run(
             draft_id,
@@ -267,6 +271,7 @@ class BacktraderMCPService:
             timeout_seconds,
             run_profile_id,
             idempotency_key,
+            param_grid,
         )
 
     def start_strategy_run(

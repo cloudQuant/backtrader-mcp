@@ -156,6 +156,24 @@ class ChangeService:
         self.state.audit("change.prepared", change_id, {"change_hash": change_hash})
         return response
 
+    def list_target_tree(self, target_root_id: str, target_relative_dir: str) -> dict[str, Any]:
+        """Read-only tree of a confined target directory (relative path -> sha256).
+
+        Lets a client construct exact expected_target_hashes preimages.
+        """
+        target = self._target(target_root_id, target_relative_dir)
+        files = {}
+        if target.is_dir():
+            for path in sorted(target.rglob("*")):
+                if path.is_file() and not path.is_symlink():
+                    files[str(path.relative_to(target))] = file_hash(path)
+        return {
+            "target_root_id": target_root_id,
+            "target_relative_dir": target_relative_dir,
+            "file_count": len(files),
+            "files": files,
+        }
+
     def approve_change(self, change_id: str, change_token: str) -> dict[str, Any]:
         claims = self.signer.verify(change_token, "change", consume_nonce=False)
         change = self.state.get("change", change_id)
@@ -216,8 +234,11 @@ class ChangeService:
             if _tree_manifest(target) != change["target_preimage_hashes"]:
                 raise Conflict("target changed after prepare")
             self.state.consume_approval(approval_id, "change", change_set_id, change["change_hash"])
-            self.signer.consume(change_token)
+            # Apply the journaled replacement first; the nonce burns only once
+            # the persistent result exists, so a mid-apply failure never
+            # bricks the change set.
             self._replace_tree(change, verified, target)
+            self.signer.consume(change_token)
 
             def mark_applied(current: dict[str, Any]) -> dict[str, Any]:
                 current["status"] = "applied"

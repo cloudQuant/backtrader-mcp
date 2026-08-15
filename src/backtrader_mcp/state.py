@@ -252,6 +252,16 @@ class StateStore:
             connection.commit()
         return len(rows)
 
+    def clean_nonces(self, before_iso: str) -> int:
+        """Delete nonce ledger rows consumed or created before a timestamp.
+
+        Unconsumed nonces that are still within their token TTL would be newer
+        than any sensible ``before``; consumed rows are pure history.
+        """
+        with self.connect() as connection:
+            cursor = connection.execute("DELETE FROM nonces WHERE used_at < ?", (before_iso,))
+            return cursor.rowcount
+
     def clean_approvals(self, before_iso: str) -> int:
         """Delete approvals that were consumed or expired before a timestamp."""
         with self.connect() as connection:

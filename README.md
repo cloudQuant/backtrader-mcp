@@ -360,6 +360,25 @@ Successful results contain exactly eleven canonical metrics:
 `comparison-profile-v1` defines deterministic integer equality and floating
 point tolerances for run comparison.
 
+## Execution semantics
+
+- Default sizer is `bt.sizers.FixedSize(stake=1)`: `self.buy()` without a size
+  trades exactly one unit. Templates demonstrate explicit sizing where it
+  matters (order_risk uses a risk fraction).
+- Commission is a fixed percentage applied to both sides
+  (`cerebro.broker.setcommission(percabs=True)`).
+- There is no cheat-on-close; market orders fill at the next bar's open.
+- `SharpeRatio` assumes riskfree rate 0.01 and population standard
+  deviation; the annualization factor follows the data timeframe (252/52/12).
+- `max_drawdown` is reported as a positive percent.
+- The yahoo adapter stores raw close prices (`adjclose=False`); no
+  adjustment metadata is applied.
+- The CloudQuant fork resamples with `bar2edge=True` by default, which
+  differs from upstream backtrader.
+- `parameter_sweep` runs each grid combination once (runonce) with the
+  params passed through `cerebro.addstrategy(..., **override)`; one approval
+  covers the whole frozen grid (at most 64 combinations).
+
 ## Typed data adapters and bar operations
 
 `register_local_dataset` accepts six independent typed adapters:
@@ -803,6 +822,21 @@ python -m pip uninstall backtrader-mcp
 `annual_return`、`max_drawdown` 和 `return_rate`。`sharpe_ratio` 和
 `annual_return` 可为空。内置的 `comparison-profile-v1` 定义了运行比较时确定性的整
 数相等判定和浮点容差。
+
+## 执行语义
+
+- 默认 sizer 为 `bt.sizers.FixedSize(stake=1)`：不带 size 的 `self.buy()` 恰好
+  成交 1 单位。模板在关键处演示显式 sizing（order_risk 使用风险比例）。
+- 佣金为双边固定百分比（`cerebro.broker.setcommission(percabs=True)`）。
+- 无 cheat-on-close；市价单在下一根 bar 的开盘价成交。
+- `SharpeRatio` 假设无风险利率 0.01、总体标准差；年化因子随数据 timeframe
+  （252/52/12）。
+- `max_drawdown` 以正数百分比报告。
+- yahoo adapter 存储未调整收盘价（`adjclose=False`），不应用调整元数据。
+- CloudQuant fork 默认 `bar2edge=True` 重采样，与上游 backtrader 不同。
+- `parameter_sweep` 每个网格组合以 runonce 执行一次，参数经
+  `cerebro.addstrategy(..., **override)` 传入；一次审批覆盖整个冻结网格
+  （最多 64 个组合）。
 
 ## Typed 数据 adapter 与 bar 操作
 

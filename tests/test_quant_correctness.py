@@ -58,7 +58,14 @@ def test_precomputed_ml_requires_custom_lines(registered_ml_dataset):
     with pytest.raises(InvalidRequest, match="precomputed_ml requires"):
         service.create_strategy_draft(spec)
     spec["feeds"][0]["lines"] = [
-        "datetime", "open", "high", "low", "close", "volume", "openinterest", "signal",
+        "datetime",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "openinterest",
+        "signal",
     ]
     draft = service.create_strategy_draft(spec)
     assert draft["archetype"] == "precomputed_ml"
@@ -83,7 +90,14 @@ def test_seed_is_canonical_and_frozen_into_run_plans(registered_dataset):
         "seed-freeze",
     )
     assert plan["frozen_inputs"]["seed"] == 42
-    assert plan["frozen_inputs"]["runtime_commit"] is not None
+    # The commit fingerprint is best-effort: pip-installed runtimes have no
+    # git checkout, so the frozen value must match whatever the runtime
+    # actually provides (None when unavailable).
+    from backtrader_mcp.backtrader_runtime import runtime_git_commit
+
+    assert plan["frozen_inputs"]["runtime_commit"] == runtime_git_commit(
+        service.settings.runtimes["default"]
+    )
 
 
 def test_analyzer_whitelist_rejects_unknown(registered_dataset):
@@ -150,3 +164,90 @@ def test_analyzer_metrics_flow_into_results(registered_dataset):
     assert extra is not None
     assert "sqn" in extra
     assert "vwr" in extra
+
+
+def test_parameter_sweep_freezes_grid_and_ranks_combinations(registered_dataset):
+    """One approval covers the whole typed parameter grid."""
+    service, dataset = registered_dataset
+    from conftest import canonical_spec
+
+    spec = canonical_spec(dataset["dataset_id"], "single_data_indicator")
+    draft = service.create_strategy_draft(spec)
+    validation = service.validate_strategy_draft(draft["draft_id"], draft["revision"])
+    plan = service.prepare_strategy_run(
+        draft["draft_id"],
+        validation["validation_token"],
+        dataset["dataset_id"],
+        "default",
+        90,
+        "parameter_sweep",
+        "sweep-plan",
+        param_grid={"period": [3, 5], "fast": [2, 4]},
+    )
+    assert plan["frozen_inputs"]["param_grid"] == {
+        "fast": [2, 4],
+        "period": [3, 5],
+    }
+    approval = service.jobs.approve_run_plan(plan["run_plan_id"], plan["run_token"])
+    started = service.start_strategy_run(
+        plan["run_plan_id"], plan["run_token"], approval["approval_id"], "sweep-start"
+    )
+    import time
+
+    job_id = started["job_id"]
+    for _ in range(120):
+        status = service.get_run_status(job_id)
+        if status["state"] in {"SUCCEEDED", "FAILED", "TIMED_OUT", "ORPHANED", "CANCELLED"}:
+            break
+        time.sleep(1)
+    assert status["state"] == "SUCCEEDED", status.get("error")
+    result = service.get_run_result(job_id)
+    sweep = result["extensions"]["sweep"]
+    assert sweep["combination_count"] == 4
+    assert len(sweep["combinations"]) == 4
+    assert all(set(combo["parameters"]) == {"fast", "period"} for combo in sweep["combinations"])
+    assert sweep["best_parameters"] in [combo["parameters"] for combo in sweep["combinations"]]
+    # Ranking is descending by return_rate.
+    rates = [float(combo["metrics"]["return_rate"]) for combo in sweep["combinations"]]
+    assert rates == sorted(rates, reverse=True)
+
+
+def test_parameter_sweep_rejects_unknown_parameter_names(registered_dataset):
+    service, dataset = registered_dataset
+    from conftest import canonical_spec
+
+    spec = canonical_spec(dataset["dataset_id"], "single_data_indicator")
+    draft = service.create_strategy_draft(spec)
+    validation = service.validate_strategy_draft(draft["draft_id"], draft["revision"])
+    with pytest.raises(InvalidRequest, match="param_grid"):
+        service.prepare_strategy_run(
+            draft["draft_id"],
+            validation["validation_token"],
+            dataset["dataset_id"],
+            "default",
+            60,
+            "parameter_sweep",
+            "sweep-bad",
+            param_grid={"nope": [1]},
+        )
+    with pytest.raises(InvalidRequest, match="param_grid"):
+        service.prepare_strategy_run(
+            draft["draft_id"],
+            validation["validation_token"],
+            dataset["dataset_id"],
+            "default",
+            60,
+            "parameter_sweep",
+            "sweep-missing",
+        )
+
+
+def test_list_target_tree_reads_confined_tree(service_env):
+    service, _, target = service_env
+    managed = target / "managed"
+    managed.mkdir(exist_ok=True)
+    (managed / "strategy.py").write_text("x", encoding="utf-8")
+    tree = service.list_target_tree("strategies", "managed")
+    assert tree["file_count"] == 1
+    assert set(tree["files"]) == {"strategy.py"}
+    assert len(tree["files"]["strategy.py"]) == 64

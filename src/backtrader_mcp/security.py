@@ -119,7 +119,10 @@ class TokenSigner:
         if not isinstance(exp, int) or exp <= now:
             raise Forbidden("token has expired")
         iat = payload.get("iat")
-        if not isinstance(iat, int) or abs(now - iat) > self.IAT_SKEW_SECONDS:
+        # Reject only clocks claiming to be from the future beyond skew; past
+        # issuance is governed by exp (TTLs are 15-30 minutes, and a human
+        # approval can legitimately arrive minutes after issuance).
+        if not isinstance(iat, int) or iat - now > self.IAT_SKEW_SECONDS:
             raise Forbidden("token timestamp is invalid")
         claims = payload.get("claims")
         if not isinstance(claims, dict):

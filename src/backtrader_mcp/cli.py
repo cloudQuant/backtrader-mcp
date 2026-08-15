@@ -63,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     clean_parser.add_argument(
         "--kind",
         required=True,
-        choices=("audit", "idempotency", "jobs", "cas", "drafts", "approvals"),
+        choices=("audit", "idempotency", "jobs", "cas", "drafts", "approvals", "nonces"),
     )
     clean_parser.add_argument(
         "--before", required=True, help="ISO date YYYY-MM-DD (records older than this are deleted)"
@@ -135,6 +135,15 @@ def _clean_records(service: BacktraderMCPService, kind: str, before: str) -> dic
     if kind == "drafts":
         result = service.drafts.clean_drafts(before)
         return {"kind": kind, "before": before, **result}
+    if kind == "nonces":
+        deleted = service.state.clean_nonces(before)
+        service.state.audit(
+            "clean.records",
+            kind,
+            {"kind": kind, "before": before, "deleted": deleted},
+        )
+        service.state.checkpoint()
+        return {"kind": kind, "before": before, "deleted": deleted}
     if kind == "approvals":
         deleted = service.state.clean_approvals(before)
         service.state.audit(

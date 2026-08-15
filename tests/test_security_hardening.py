@@ -69,7 +69,7 @@ def test_expired_token_at_exact_expiry_is_rejected(tmp_path):
         signer.verify(f"{encoded}.{signature}", "change")
 
 
-def test_iat_outside_skew_window_is_rejected(tmp_path):
+def test_iat_future_skew_is_rejected_and_past_is_exp_governed(tmp_path):
     import hashlib
     import hmac
     import time
@@ -78,21 +78,25 @@ def test_iat_outside_skew_window_is_rejected(tmp_path):
 
     signer = _signer(tmp_path)
     now = int(time.time())
-    for iat in (now - 400, now + 400):
-        payload = {
-            "v": 1,
-            "kind": "change",
-            "iat": iat,
-            "exp": now + 900,
-            "nonce": "b" * 32,
-            "claims": {"change_id": "c1"},
-        }
-        encoded = b64url_encode(canonical_json(payload).encode("utf-8"))
-        signature = b64url_encode(
-            hmac.new(signer._secret, encoded.encode(), hashlib.sha256).digest()
-        )
-        with pytest.raises(Forbidden, match="timestamp"):
-            signer.verify(f"{encoded}.{signature}", "change")
+    # Future issuance beyond the skew window is rejected.
+    payload = {
+        "v": 1,
+        "kind": "change",
+        "iat": now + 400,
+        "exp": now + 900,
+        "nonce": "b" * 32,
+        "claims": {"change_id": "c1"},
+    }
+    encoded = b64url_encode(canonical_json(payload).encode("utf-8"))
+    signature = b64url_encode(hmac.new(signer._secret, encoded.encode(), hashlib.sha256).digest())
+    with pytest.raises(Forbidden, match="timestamp"):
+        signer.verify(f"{encoded}.{signature}", "change")
+    # Past issuance within exp is accepted (human approval latency).
+    signer._state.issue_nonce("b" * 32)
+    payload["iat"] = now - 400
+    encoded = b64url_encode(canonical_json(payload).encode("utf-8"))
+    signature = b64url_encode(hmac.new(signer._secret, encoded.encode(), hashlib.sha256).digest())
+    assert signer.verify(f"{encoded}.{signature}", "change") == {"change_id": "c1"}
 
 
 def test_array_payload_is_rejected(tmp_path):

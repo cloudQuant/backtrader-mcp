@@ -28,6 +28,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   values.
 - Tool annotations (readOnlyHint/destructiveHint/idempotentHint/openWorldHint/
   title) across the 29-tool surface.
+- Quant product capabilities and review remediation (iteration 013):
+  derive outputs drop warmup rows and register the derived column as a
+  pandas_custom_lines feature line (derived features are now addressable by
+  precomputed_ml strategies), a `parameter_sweep` run profile freezes a
+  typed parameter grid (at most 64 combinations, one approval) and ranks
+  per-combination results, `alignment.mode` is tightened to intersection,
+  generated templates carry notify_order with an inert record_fills switch,
+  MT5 feeds reject sub-minute timeframes, a `list_target_tree` read-only
+  tool exposes exact target preimages, `clean --kind nonces` recycles the
+  token ledger, and the stdio transport E2E test now runs in the
+  clean-wheel acceptance. Review remediation: CI lint pins ruff, the
+  runtime-commit test is environment-agnostic, token iat accepts past
+  issuance (exp governs), the token nonce burns only after the persistent
+  result exists, OHLC quality gating has an explicit opt-out for
+  non-positive-price markets, the sma window uses a deque, and the
+  version-literal test was removed.
 - Quant correctness (iteration 012): comparison tolerances load from
   the packaged comparison-profile-v1 policy (metric_overrides now apply),
   `precomputed_ml` fails fast without a declared custom feature line, an

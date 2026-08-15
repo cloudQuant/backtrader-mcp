@@ -326,6 +326,19 @@ def create_server(
         )
 
     @server.tool(
+        title="List Target Tree",
+        annotations=_annotations(True),
+    )
+    @client_safe
+    def list_target_tree(target_root_id: str, target_relative_dir: str) -> dict[str, Any]:
+        """Read a confined target directory tree as relative-path to sha256.
+
+        Use before prepare_strategy_changes to construct exact
+        expected_target_hashes preimages.
+        """
+        return get_service().list_target_tree(target_root_id, target_relative_dir)
+
+    @server.tool(
         title="Prepare Strategy Changes",
         annotations=_annotations(False, idempotent=True),
     )
@@ -388,11 +401,15 @@ def create_server(
         timeout_seconds: int = 60,
         run_profile_id: str = "fixed_tests",
         idempotency_key: str = "",
+        param_grid: dict[str, list[Any]] | None = None,
     ) -> dict[str, Any]:
         """Freeze exact run inputs and return a signed plan requiring local approval.
 
         The response includes the printed local approval command. A separate
-        execution approval is mandatory before start_strategy_run.
+        execution approval is mandatory before start_strategy_run. For
+        run_profile_id=parameter_sweep, param_grid maps StrategySpec parameter
+        names to value lists (at most 64 combinations); one approval covers
+        the whole grid.
         """
         return get_service().prepare_strategy_run(
             draft_id,
@@ -402,6 +419,7 @@ def create_server(
             timeout_seconds,
             run_profile_id,
             idempotency_key,
+            param_grid,
         )
 
     @server.tool(

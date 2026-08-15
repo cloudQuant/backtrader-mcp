@@ -367,7 +367,8 @@ def run_materialized_backtest(
                     "registered_class": type(added).__name__,
                 }
             )
-        cerebro.addstrategy(strategy_class)
+        params_override = json.loads(os.environ.get("BACKTRADER_MCP_PARAMS", "{}"))
+        cerebro.addstrategy(strategy_class, **params_override)
         cerebro.addanalyzer(SharpeRatio, _name="sharpe")
         cerebro.addanalyzer(Returns, _name="returns")
         cerebro.addanalyzer(DrawDown, _name="drawdown")

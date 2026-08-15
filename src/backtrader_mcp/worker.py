@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from .errors import Conflict, InvalidRequest
 from .jobs import ACTIVE_STATES, RUN_PROFILE_MODES, TERMINAL_STATES
@@ -286,6 +286,7 @@ def _candidate_environment(
     mode: str,
     seed: int | None = None,
     analyzers: list[str] | None = None,
+    params_override: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Return the deliberately small environment granted to a strategy candidate."""
 
@@ -311,6 +312,7 @@ def _candidate_environment(
             "BACKTRADER_MCP_RUN_MODE": mode,
             "BACKTRADER_MCP_SEED": str(seed) if seed is not None else "",
             "BACKTRADER_MCP_ANALYZERS": json.dumps(analyzers or [], sort_keys=True),
+            "BACKTRADER_MCP_PARAMS": json.dumps(params_override or {}, sort_keys=True),
         }
     )
 
@@ -396,151 +398,138 @@ def run_worker(state_root: Path, job_id: str) -> int:
     state.audit("job.resource_limits", job_id, {"status": resource_status})
     logger.info("worker.run_start job_id=%s profile=%s", job_id, job["run_profile_id"])
     deadline = time.monotonic() + job["timeout_seconds"]
+    logger.info("worker.pre_loop job_id=%s", job_id)
     mode_results: dict[str, dict[str, Any]] = {}
     extra_metrics: dict[str, Any] | None = None
     candidate_artifacts: list[dict[str, Any]] = []
+    sweep_grid = job.get("param_grid")
+    sweep_combos: list[dict[str, Any]] | None = None
+    sweep_results: list[dict[str, Any]] = []
+    if sweep_grid:
+        import itertools
+
+        sweep_keys = sorted(sweep_grid)
+        sweep_combos = [
+            dict(zip(sweep_keys, values))
+            for values in itertools.product(*(sweep_grid[key] for key in sweep_keys))
+        ]
     package_src = str(Path(__file__).resolve().parents[1])
     for mode in modes:
-        result_path = job_root / f"result.{mode}.candidate.json"
-        stdout_path = job_root / f"candidate.{mode}.stdout.log"
-        stderr_path = job_root / f"candidate.{mode}.stderr.log"
-        environment = _candidate_environment(
-            runtime_root=job["runtime_root"],
-            package_src=package_src,
-            master_dataset_path=master_dataset_path,
-            dataset_paths=dataset_paths,
-            feed_configs=feed_configs,
-            result_path=result_path,
-            mode=mode,
-            seed=job.get("seed"),
-            analyzers=job.get("analyzers"),
-        )
-        with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
-            process = subprocess.Popen(
-                [sys.executable, str(entrypoint)],
-                cwd=draft_root,
-                env=environment,
-                stdin=subprocess.DEVNULL,
-                stdout=stdout,
-                stderr=stderr,
-                close_fds=True,
-                **popen_group_options(preexec_fn=lambda: _apply_resource_limits(resource_limits)),
-            )
-            recorded = _update_if(
+        variants: Sequence[dict[str, Any] | None]
+        if sweep_combos is not None:
+            variants = sweep_combos
+        else:
+            variants = [None]
+        for variant_index, variant in enumerate(variants):
+            suffix = f".{variant_index}" if sweep_combos is not None else ""
+            outcome = _execute_mode(
                 state,
                 job_id,
-                lambda current: current.get("state") in ACTIVE_STATES,
-                child_pid=process.pid,
-                heartbeat_at=utc_now(),
-                active_mode=mode,
-            )
-            if recorded is None:
-                terminate_popen(process)
-                logger.info("worker.child_record_suppressed job_id=%s", job_id)
-                return 3
-            last_heartbeat = time.monotonic()
-            while process.poll() is None:
-                current = state.get("job", job_id)
-                if current["state"] == "CANCEL_REQUESTED":
-                    terminate_popen(process)
-                    _write_cancelled(state, job_id, "cancelled while running")
-                    return 3
-                now = time.monotonic()
-                if now >= deadline:
-                    terminate_popen(process)
-                    _write_terminal(
-                        state,
-                        job_id,
-                        "TIMED_OUT",
-                        f"run exceeded {job['timeout_seconds']} seconds",
-                        "timeout",
-                    )
-                    return 4
-                if now - last_heartbeat >= 1.0:
-                    _heartbeat(state, job_id)
-                    last_heartbeat = now
-                time.sleep(0.2)
-        if process.returncode != 0:
-            stderr_tail = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:]
-            classified = _classify_exit(process.returncode)
-            assert classified is not None  # nonzero returncodes always classify
-            kind, detail = classified
-            error = f"{mode} {detail}" + (f": {stderr_tail}" if stderr_tail else "")
-            _write_terminal(state, job_id, "FAILED", error, kind)
-            return process.returncode or 1
-        try:
-            if result_path.stat().st_size > 1024 * 1024:
-                raise ValueError("candidate result exceeds 1 MiB")
-            candidate = _validate_result(
-                json.loads(result_path.read_text(encoding="utf-8")),
+                job,
+                job_root,
+                mode,
+                draft_root,
+                entrypoint,
+                dataset_paths,
                 feed_configs,
+                master_dataset_path,
+                resource_limits,
+                deadline,
+                package_src,
+                variant,
+                suffix,
             )
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            _write_terminal(
-                state,
-                job_id,
-                "FAILED",
-                f"{mode} result validation failed: {exc}",
-                "validation",
-            )
-            return 5
-        if candidate.get("extra_metrics"):
-            extra_metrics = extra_metrics or {}
-            extra_metrics.update(candidate["extra_metrics"])
-        mode_results[mode] = candidate
-        candidate_artifacts.extend(
-            [
-                {
-                    "role": f"{mode}_candidate_result",
-                    "path": result_path.name,
-                    "bytes": result_path.stat().st_size,
-                    "sha256": file_hash(result_path),
-                },
-                {
-                    "role": f"{mode}_stderr",
-                    "path": stderr_path.name,
-                    "bytes": stderr_path.stat().st_size,
-                    "sha256": file_hash(stderr_path),
-                },
-            ]
-        )
+            if isinstance(outcome, int):
+                return outcome
+            candidate, artifacts = outcome
+            if variant is not None:
+                sweep_results.append(
+                    {
+                        "parameters": variant,
+                        "metrics": candidate["metrics"],
+                        "extra_metrics": candidate.get("extra_metrics"),
+                    }
+                )
+            if candidate.get("extra_metrics"):
+                extra_metrics = extra_metrics or {}
+                extra_metrics.update(candidate["extra_metrics"])
+            mode_results[mode] = candidate
+            candidate_artifacts.extend(artifacts)
+
     try:
         primary_mode = "runonce" if "runonce" in mode_results else modes[0]
-        comparison = (
-            compare_metrics(
-                mode_results["runonce"]["metrics"],
-                mode_results["runnext"]["metrics"],
+        if sweep_grid is not None:
+            best = max(
+                sweep_results,
+                key=lambda item: float(item["metrics"].get("return_rate") or 0.0),
             )
-            if {"runonce", "runnext"} <= set(mode_results)
-            else None
-        )
-        normalized_path = job_root / "result.json"
-        normalized_core = {
-            "schema_version": "run-result-v1",
-            "run_id": job_id,
-            "status": (
-                "failed"
-                if comparison is not None and comparison["status"] == "mismatched"
-                else "passed"
-            ),
-            "metrics": mode_results[primary_mode]["metrics"],
-            "diagnostics": comparison["diagnostics"] if comparison else [],
-            "artifacts": candidate_artifacts,
-            "extensions": {
-                "draft_id": job["draft_id"],
-                "draft_revision": job["draft_revision"],
-                "artifact_hash": job["run_manifest"]["artifact_hash"],
-                "dataset_id": job["dataset_id"],
-                "dataset_semantic_hash": job["dataset_semantic_hash"],
-                "dataset_content_hashes": job["dataset_content_hashes"],
-                "runtime_id": job["runtime_id"],
-                "run_manifest_hash": job["run_manifest"]["manifest_hash"],
-                "run_profile_id": job["run_profile_id"],
-                "mode_results": mode_results,
-                "runonce_runnext_comparison": comparison,
-                "extra_metrics": extra_metrics,
-            },
-        }
+            normalized_core = {
+                "schema_version": "run-result-v1",
+                "run_id": job_id,
+                "status": "passed",
+                "metrics": best["metrics"],
+                "diagnostics": [],
+                "artifacts": candidate_artifacts,
+                "extensions": {
+                    "draft_id": job["draft_id"],
+                    "draft_revision": job["draft_revision"],
+                    "artifact_hash": job["run_manifest"]["artifact_hash"],
+                    "dataset_id": job["dataset_id"],
+                    "dataset_semantic_hash": job["dataset_semantic_hash"],
+                    "dataset_content_hashes": job["dataset_content_hashes"],
+                    "runtime_id": job["runtime_id"],
+                    "run_manifest_hash": job["run_manifest"]["manifest_hash"],
+                    "run_profile_id": job["run_profile_id"],
+                    "extra_metrics": extra_metrics,
+                    "sweep": {
+                        "grid": sweep_grid,
+                        "combination_count": len(sweep_results),
+                        "best_parameters": best["parameters"],
+                        "combinations": sorted(
+                            sweep_results,
+                            key=lambda item: float(item["metrics"].get("return_rate") or 0.0),
+                            reverse=True,
+                        ),
+                    },
+                },
+            }
+            normalized_path = job_root / "result.json"
+        else:
+            comparison = (
+                compare_metrics(
+                    mode_results["runonce"]["metrics"],
+                    mode_results["runnext"]["metrics"],
+                )
+                if {"runonce", "runnext"} <= set(mode_results)
+                else None
+            )
+            normalized_path = job_root / "result.json"
+            normalized_core = {
+                "schema_version": "run-result-v1",
+                "run_id": job_id,
+                "status": (
+                    "failed"
+                    if comparison is not None and comparison["status"] == "mismatched"
+                    else "passed"
+                ),
+                "metrics": mode_results[primary_mode]["metrics"],
+                "diagnostics": comparison["diagnostics"] if comparison else [],
+                "artifacts": candidate_artifacts,
+                "extensions": {
+                    "draft_id": job["draft_id"],
+                    "draft_revision": job["draft_revision"],
+                    "artifact_hash": job["run_manifest"]["artifact_hash"],
+                    "dataset_id": job["dataset_id"],
+                    "dataset_semantic_hash": job["dataset_semantic_hash"],
+                    "dataset_content_hashes": job["dataset_content_hashes"],
+                    "runtime_id": job["runtime_id"],
+                    "run_manifest_hash": job["run_manifest"]["manifest_hash"],
+                    "run_profile_id": job["run_profile_id"],
+                    "mode_results": mode_results,
+                    "runonce_runnext_comparison": comparison,
+                    "extra_metrics": extra_metrics,
+                },
+            }
         normalized = {
             **normalized_core,
             "result_hash": sha256_json(normalized_core),
@@ -581,6 +570,126 @@ def run_worker(state_root: Path, job_id: str) -> int:
     )
     logger.info("worker.run_succeeded job_id=%s", job_id)
     return 0
+
+
+def _execute_mode(
+    state: StateStore,
+    job_id: str,
+    job: dict[str, Any],
+    job_root: Path,
+    mode: str,
+    draft_root: Path,
+    entrypoint: Path,
+    dataset_paths: dict[str, str],
+    feed_configs: list[dict[str, Any]],
+    master_dataset_path: str,
+    resource_limits: dict[str, Any],
+    deadline: float,
+    package_src: str,
+    params_override: dict[str, Any] | None,
+    suffix: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | int:
+    logger.info("worker.mode_start mode=%s suffix=%s", mode, suffix)
+    result_path = job_root / f"result.{mode}{suffix}.candidate.json"
+    stdout_path = job_root / f"candidate.{mode}{suffix}.stdout.log"
+    stderr_path = job_root / f"candidate.{mode}{suffix}.stderr.log"
+    environment = _candidate_environment(
+        runtime_root=job["runtime_root"],
+        package_src=package_src,
+        master_dataset_path=master_dataset_path,
+        dataset_paths=dataset_paths,
+        feed_configs=feed_configs,
+        result_path=result_path,
+        mode=mode,
+        seed=job.get("seed"),
+        analyzers=job.get("analyzers"),
+        params_override=params_override,
+    )
+    logger.info("worker.popen mode=%s", mode)
+    with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+        process = subprocess.Popen(
+            [sys.executable, str(entrypoint)],
+            cwd=draft_root,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=stderr,
+            close_fds=True,
+            **popen_group_options(preexec_fn=lambda: _apply_resource_limits(resource_limits)),
+        )
+        recorded = _update_if(
+            state,
+            job_id,
+            lambda current: current.get("state") in ACTIVE_STATES,
+            child_pid=process.pid,
+            heartbeat_at=utc_now(),
+            active_mode=mode,
+        )
+        if recorded is None:
+            terminate_popen(process)
+            logger.info("worker.child_record_suppressed job_id=%s", job_id)
+            return 3
+        last_heartbeat = time.monotonic()
+        while process.poll() is None:
+            current = state.get("job", job_id)
+            if current["state"] == "CANCEL_REQUESTED":
+                terminate_popen(process)
+                _write_cancelled(state, job_id, "cancelled while running")
+                return 3
+            now = time.monotonic()
+            if now >= deadline:
+                terminate_popen(process)
+                _write_terminal(
+                    state,
+                    job_id,
+                    "TIMED_OUT",
+                    f"run exceeded {job['timeout_seconds']} seconds",
+                    "timeout",
+                )
+                return 4
+            if now - last_heartbeat >= 1.0:
+                _heartbeat(state, job_id)
+                last_heartbeat = now
+            time.sleep(0.2)
+    if process.returncode != 0:
+        stderr_tail = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:]
+        classified = _classify_exit(process.returncode)
+        assert classified is not None  # nonzero returncodes always classify
+        kind, detail = classified
+        error = f"{mode} {detail}" + (f": {stderr_tail}" if stderr_tail else "")
+        _write_terminal(state, job_id, "FAILED", error, kind)
+        return process.returncode or 1
+    try:
+        if result_path.stat().st_size > 1024 * 1024:
+            raise ValueError("candidate result exceeds 1 MiB")
+        candidate = _validate_result(
+            json.loads(result_path.read_text(encoding="utf-8")),
+            feed_configs,
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        _write_terminal(
+            state,
+            job_id,
+            "FAILED",
+            f"{mode} result validation failed: {exc}",
+            "validation",
+        )
+        return 5
+    artifacts = [
+        {
+            "role": f"{mode}_candidate_result",
+            "path": result_path.name,
+            "bytes": result_path.stat().st_size,
+            "sha256": file_hash(result_path),
+        },
+        {
+            "role": f"{mode}_stderr",
+            "path": stderr_path.name,
+            "bytes": stderr_path.stat().st_size,
+            "sha256": file_hash(stderr_path),
+        },
+    ]
+    return candidate, artifacts
 
 
 def main(argv: list[str] | None = None) -> int:
