@@ -11,6 +11,10 @@ P0 is deliberately offline and backtest-only. It does not expose brokers,
 stores, credentials, live orders, arbitrary Python execution, or network
 transports.
 
+Full documentation (English / 中文):
+<https://cloudquant.github.io/backtrader-mcp/> (also buildable on Read the
+Docs; sources under `docs/`).
+
 ## Distribution contract
 
 - Python 3.10 or newer.
@@ -25,10 +29,11 @@ transports.
   `get_run_status`, `cancel_strategy_run`, and `get_run_result` tools. MCP SDK
   v2.0.0 does not provide the Tasks extension, so this product does not claim
   it.
-- Observability tools: `list_jobs` (state-filtered job enumeration) and
-  `get_run_logs` (bounded, path-sanitized job log tails); `get_run_status`
-  reports `log_uri`, `elapsed_seconds`, and `eta_bound`.
-- All 29 tools carry readOnlyHint/destructiveHint/idempotentHint/openWorldHint
+- Observability tools: `list_jobs` (state-filtered job enumeration),
+  `get_run_logs` (bounded, path-sanitized job log tails), and
+  `list_target_tree` (read-only target preimages for exact change reviews);
+  `get_run_status` reports `log_uri`, `elapsed_seconds`, and `eta_bound`.
+- All 30 tools carry readOnlyHint/destructiveHint/idempotentHint/openWorldHint
   annotations. Tool errors cross the MCP boundary as structured
   `[code] message` text with an optional `Suggestion:` next step; absolute
   filesystem paths in error text and job logs are redacted.
@@ -273,19 +278,26 @@ manager after deactivation.
 4. `derive_tabular_dataset` runs only `identity`, `dropna`, `returns`, or
    `sma` with typed parameters and an exact source-manifest hash. It creates a
    new dataset ID; no DataFrame, callable, pickle, or in-memory object crosses
-   the protocol.
+   the protocol. `returns`/`sma` drop their warmup rows and register the
+   derived column as a `pandas_custom_lines` feature line, so a derived
+   dataset can feed `precomputed_ml` strategies directly.
 5. `search_strategy_catalog` selects one of seven archetypes.
 6. `create_strategy_draft` renders either `single_test` or `python_bundle`.
-   All seven archetypes support both profiles.
+   All seven archetypes support both profiles. The spec may declare an
+   allowlisted analyzer set (`extensions.analyzers`: sqn/calmar/vwr/
+   timereturn) whose typed metrics flow into the result's `extra_metrics`,
+   and an optional canonical `seed` that freezes into the run manifest and
+   seeds the candidate's random/numpy state for reproducible strategies.
 7. `update_strategy_draft` requires the current revision and file hash.
 8. `validate_strategy_draft` parses and compiles AST without importing the
    candidate in the server. It classifies direct Strategy classes separately
    from cooperative Indicator/LineIterator/Observer/Analyzer objects. A direct
    Strategy does not have a global `super().__init__()` requirement; a custom
    cooperative line object does.
-9. `prepare_strategy_changes` requires the validation token, exact target
-   preimage hashes, and an idempotency key. It returns a signed change token
-   and a complete create/replace/delete review.
+9. Read the current target tree with `list_target_tree` (relative path to
+   sha256), then `prepare_strategy_changes` with the validation token, exact
+   target preimage hashes, and an idempotency key. It returns a signed change
+   token and a complete create/replace/delete review.
 10. Review the change, then run the printed command locally:
 
     ```bash
@@ -304,8 +316,11 @@ manager after deactivation.
     transaction.
 12. `prepare_strategy_run` requires a fresh validation token, immutable
     dataset ID, registered runtime ID, timeout, one of the fixed run profiles
-    (`runonce`, `runnext`, `runonce_runnext_compare`, or `fixed_tests`), and an
-    idempotency key. It freezes the exact draft, artifact, validation, dataset,
+    (`runonce`, `runnext`, `runonce_runnext_compare`, `fixed_tests`, or
+    `parameter_sweep`), and an idempotency key. `parameter_sweep` freezes a
+    typed `param_grid` (StrategySpec parameter names to value lists, at most
+    64 combinations) under the same single approval and ranks the
+    per-combination results by `return_rate`. It freezes the exact draft, artifact, validation, dataset,
     runtime, profile, and timeout hashes and returns a signed run token.
 13. Review those frozen inputs, then create a separate execution approval
     locally:
@@ -346,9 +361,10 @@ resource cap or a supervision decision.
 
 The concurrency cap rejects instead of queueing: `start_strategy_run` fails
 with an actionable suggestion when `max_concurrent_jobs` is reached.
-Retention: `backtrader-mcp clean --kind jobs|cas|drafts|approvals --before
-YYYY-MM-DD` removes finished job records, unreferenced CAS objects,
-unreferenced drafts, and consumed/expired approvals respectively. Dataset
+Retention: `backtrader-mcp clean --kind
+jobs|cas|drafts|approvals|nonces --before YYYY-MM-DD` removes finished job
+records, unreferenced CAS objects, unreferenced drafts, consumed/expired
+approvals, and consumed token nonces respectively. Dataset
 registration streams row-by-row (bounded memory), deduplicates identical
 sources without re-parsing, and catalog refresh reuses an (mtime,size)
 fingerprint cache.
@@ -391,7 +407,16 @@ format through `GenericCSVData`.
 Pandas inputs must use `source_type=materialized_dataframe` and reference a
 confined `.csv` file. Pickles, arbitrary Python objects, and caller-supplied
 constructors are rejected. `pandas_custom_lines` also requires every custom
-line to be declared in both `lines` and `columns`.
+line to be declared in both `lines` and `columns`. MT5 feeds reject
+sub-minute timeframes (the adapter would otherwise silently truncate
+precision), and `alignment.mode` accepts only `intersection`.
+
+Registration enforces a data-quality gate: non-positive OHLC prices and
+inconsistent bars (high below low, high below max(open,close), low above
+min(open,close)) are rejected with row-numbered errors. Markets where zero or
+negative prices are legitimate can opt out per feed with
+`adapter_options.allow_non_positive_prices=true`; OHLC consistency is always
+enforced.
 
 Each feed may declare a typed `extensions.bar_operation`:
 
@@ -426,6 +451,10 @@ count.
 - Candidate code is never imported by the MCP process. A worker launches it
   with a fixed interpreter, fixed entrypoint, minimal environment, separate
   process group, timeout, captured output, and validated result contract.
+- Every run manifest fingerprints the runtime's git HEAD commit, the
+  runtime's version-file hash, and the resolved pandas/numpy versions
+  (best-effort: a pip-installed runtime without a git checkout records a
+  null commit).
 
 Process control uses a POSIX session and resource-limit pre-exec hook on
 POSIX, while non-POSIX startup omits those options, uses a Windows process
@@ -518,6 +547,10 @@ Backtrader 策略。它把受限的 CSV 文件转换为不可变数据集，把 
 P0 版本刻意设计为离线、仅回测。它不暴露 broker、store、凭证、实盘订单、任意
 Python 执行或网络传输。
 
+完整文档（English / 中文）：
+<https://cloudquant.github.io/backtrader-mcp/>（亦可在 Read the Docs 构建；
+源文件位于 `docs/`）。
+
 ## 分发契约
 
 - Python 3.10 及以上。
@@ -531,10 +564,11 @@ Python 执行或网络传输。
 - 产品自有的 `prepare_strategy_run`、`start_strategy_run`、
   `get_run_status`、`cancel_strategy_run` 和 `get_run_result` 工具。MCP SDK
   v2.0.0 不提供 Tasks 扩展，因此本产品也不声称支持。
-- 可观测性工具：`list_jobs`（按状态过滤的作业枚举）与 `get_run_logs`（有界、
-  绝对路径脱敏的作业日志尾部）；`get_run_status` 返回 `log_uri`、
-  `elapsed_seconds` 和 `eta_bound`。
-- 全部 29 个工具都带有 readOnlyHint/destructiveHint/idempotentHint/
+- 可观测性工具：`list_jobs`（按状态过滤的作业枚举）、`get_run_logs`（有界、
+  绝对路径脱敏的作业日志尾部）与 `list_target_tree`（只读目标树原像，用于
+  精确变更评审）；`get_run_status` 返回 `log_uri`、`elapsed_seconds` 和
+  `eta_bound`。
+- 全部 30 个工具都带有 readOnlyHint/destructiveHint/idempotentHint/
   openWorldHint 注解。工具错误以结构化 `[code] 消息` 文本跨越 MCP 边界，可选
   附带 `Suggestion:` 下一步建议；错误文本与作业日志中的绝对文件系统路径会被脱敏。
 
@@ -813,8 +847,9 @@ python -m pip uninstall backtrader-mcp
 
 并发上限是"拒绝而非排队"：达到 `max_concurrent_jobs` 时
 `start_strategy_run` 失败并附可操作建议。保留策略：`backtrader-mcp clean
---kind jobs|cas|drafts|approvals --before YYYY-MM-DD` 分别删除已结束的作业记录、
-未被引用的 CAS 对象、未被引用的草稿、已消费或已过期的审批。数据集注册逐行
+--kind jobs|cas|drafts|approvals|nonces --before YYYY-MM-DD` 分别删除已结束的
+作业记录、未被引用的 CAS 对象、未被引用的草稿、已消费或已过期的审批、已消费
+的令牌 nonce。数据集注册逐行
 流式处理（有界内存）、相同源免重解析去重，目录刷新复用 (mtime,size) 指纹缓存。
 
 成功结果恰好包含 11 个规范指标：`bar_num`、`buy_count`、`sell_count`、

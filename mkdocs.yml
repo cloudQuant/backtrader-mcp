@@ -1,0 +1,89 @@
+site_name: Backtrader MCP
+site_description: Local-first MCP server for safe, reproducible Backtrader strategy development
+site_url: https://cloudquant.github.io/backtrader-mcp/
+repo_url: https://github.com/cloudQuant/backtrader-mcp
+repo_name: cloudQuant/backtrader-mcp
+edit_uri: edit/master/docs/
+exclude_docs: |
+  iterations/
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - content.code.copy
+    - content.code.annotate
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - i18n:
+      docs_structure: suffix
+      fallback_to_default: true
+      languages:
+        - locale: en
+          name: English
+          default: true
+          build: true
+          theme:
+            language: en
+        - locale: zh
+          name: 中文
+          build: true
+          theme:
+            language: zh
+          nav_translations:
+            Home: 首页
+            Getting started: 快速开始
+            Concepts: 核心概念
+            Reference: 参考
+            Operations: 运维
+            Release notes: 发布说明
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: getting-started/installation.md
+      - Host setup: getting-started/hosts.md
+      - First request: getting-started/first-request.md
+  - Concepts:
+      - Datasets and adapters: concepts/datasets.md
+      - Strategy catalog: concepts/catalog.md
+      - Drafts and validation: concepts/drafts.md
+      - Runs, jobs, and sweeps: concepts/runs.md
+      - Security model: concepts/security.md
+  - Reference:
+      - Tools: reference/tools.md
+      - Resources and prompts: reference/resources-prompts.md
+      - Contracts and policies: reference/contracts.md
+  - Operations:
+      - CLI reference: operations/cli.md
+      - Retention and cleanup: operations/cleanup.md
+  - Release notes: release-notes.md
