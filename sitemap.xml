@@ -1,0 +1,213 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/release-notes/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/release-notes/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/release-notes/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/concepts/catalog/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/concepts/catalog/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/concepts/catalog/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/concepts/datasets/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/concepts/datasets/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/concepts/datasets/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/concepts/drafts/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/concepts/drafts/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/concepts/drafts/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/concepts/runs/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/concepts/runs/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/concepts/runs/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/concepts/security/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/concepts/security/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/concepts/security/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/getting-started/first-request/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/getting-started/first-request/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/getting-started/first-request/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/getting-started/hosts/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/getting-started/hosts/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/getting-started/hosts/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/getting-started/installation/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/getting-started/installation/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/getting-started/installation/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/operations/cleanup/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/operations/cleanup/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/operations/cleanup/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/operations/cli/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/operations/cli/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/operations/cli/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/reference/contracts/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/reference/contracts/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/reference/contracts/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/reference/resources-prompts/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/reference/resources-prompts/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/reference/resources-prompts/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/reference/tools/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/reference/tools/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/reference/tools/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/zh/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/zh/release-notes/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/release-notes/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/release-notes/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/zh/concepts/catalog/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/concepts/catalog/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/concepts/catalog/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/zh/concepts/datasets/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/concepts/datasets/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/concepts/datasets/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/zh/concepts/drafts/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/concepts/drafts/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/concepts/drafts/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/zh/concepts/runs/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/concepts/runs/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/concepts/runs/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/zh/concepts/security/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/concepts/security/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/concepts/security/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/zh/getting-started/first-request/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/getting-started/first-request/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/getting-started/first-request/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/zh/getting-started/hosts/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/getting-started/hosts/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/getting-started/hosts/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/zh/getting-started/installation/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/getting-started/installation/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/getting-started/installation/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/zh/operations/cleanup/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/operations/cleanup/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/operations/cleanup/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/zh/operations/cli/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/operations/cli/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/operations/cli/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/zh/reference/contracts/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/reference/contracts/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/reference/contracts/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/zh/reference/resources-prompts/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/reference/resources-prompts/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/reference/resources-prompts/"/>
+    </url>
+    <url>
+        <loc>https://cloudquant.github.io/backtrader-mcp/zh/reference/tools/</loc>
+        <lastmod>2026-08-15</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://cloudquant.github.io/backtrader-mcp/zh/reference/tools/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://cloudquant.github.io/backtrader-mcp/reference/tools/"/>
+    </url>
+</urlset>
