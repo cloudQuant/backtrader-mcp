@@ -69,7 +69,10 @@ def test_constraints_fall_inside_pyproject_ranges():
         for name, spec in re.findall(r'^"?([\w-]+)"?\s*=\s*\[?"?([^"\]]+)"?\]?', pyproject, re.M)
         if name in {"mcp", "pandas"}
     }
-    pins = dict(re.findall(r"(?m)^([\w-]+)==([0-9].*)$", constraints))
+    pins = {}
+    for name, version in re.findall(r"(?m)^([\w-]+)==([0-9][^;]*)", constraints):
+        # Environment-marker lines may pin two versions; keep the first.
+        pins.setdefault(name, version)
     from packaging.specifiers import SpecifierSet
     from packaging.version import Version
 

@@ -1,20 +1,24 @@
-# Full pinned dependency closure, resolved on CPython 3.12 with pip 25.
-# Regenerate with: pip install --dry-run --ignore-installed --report /tmp/r.json
-#   -c constraints/requirements-v2.txt <project deps + test extras>
-# Per-archive hashes are intentionally absent: pip's --require-hashes is
-# incompatible with the wheel's range metadata and the pinned VCS backtrader;
-# the product wheel itself is SHA-256-verified separately in acceptance.
-# Do not edit by hand.
+# Full pinned dependency closure with environment markers for the
+# supported Python range (3.10-3.13). Resolved per-interpreter:
+#   py310: pip install --dry-run --ignore-installed --report /tmp/r310.json \
+#     <direct deps + test extras>
+#   py313: same on a 3.13 interpreter
+# then merged: same version on both ends -> plain pin; divergent versions
+# -> per-version markers. backtrader is a VCS direct reference (pip does
+# not hash-check VCS installs). Do not edit by hand.
 annotated-types==0.8.0
 anyio==4.14.2
 attrs==26.1.0
+backports.asyncio.runner==1.2.0; python_version < "3.13"
 backtrader @ git+https://github.com/cloudQuant/backtrader.git@3c967ed61be184c0099ba5bef55d4bed09ad0b4a
 cffi==2.1.1
 click==8.4.2
-contourpy==1.3.3
+contourpy==1.3.2; python_version < "3.13"
+contourpy==1.3.3; python_version >= "3.13"
 coverage==7.15.4
 cryptography==50.0.0
 cycler==0.12.1
+exceptiongroup==1.3.1; python_version < "3.13"
 fonttools==4.63.0
 h11==0.16.0
 httpcore2==2.10.0
@@ -25,10 +29,12 @@ iniconfig==2.3.0
 jsonschema-specifications==2025.9.1
 jsonschema==4.26.0
 kiwisolver==1.5.0
-matplotlib==3.11.1
+matplotlib==3.10.9; python_version < "3.13"
+matplotlib==3.11.1; python_version >= "3.13"
 mcp-types==2.0.0
 mcp==2.0.0
-numpy==1.26.4
+numpy==1.26.4; python_version < "3.13"
+numpy==2.5.2; python_version >= "3.13"
 opentelemetry-api==1.44.0
 packaging==26.3
 pandas==2.2.3
@@ -48,13 +54,16 @@ python-dateutil==2.9.0.post0
 python-multipart==0.0.32
 pytz==2026.3.post1
 referencing==0.37.0
-rpds-py==2026.6.3
-scipy==1.17.1
+rpds-py==0.30.0; python_version < "3.13"
+rpds-py==2026.6.3; python_version >= "3.13"
+scipy==1.15.3; python_version < "3.13"
+scipy==1.18.0; python_version >= "3.13"
 six==1.17.0
 sortedcontainers==2.4.0
 sse-starlette==3.4.8
 starlette==1.6.0
 statsmodels==0.14.6
+tomli==2.4.1; python_version < "3.13"
 truststore==0.10.4
 typing-inspection==0.4.4
 typing_extensions==4.16.0
